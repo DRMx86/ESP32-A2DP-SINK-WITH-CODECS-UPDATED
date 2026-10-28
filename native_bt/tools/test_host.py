@@ -39,6 +39,14 @@ TESTS = [
     "runtime_disconnect_pins_and_partial_expiry", "runtime_control_cross_link_scheduling",
     "gap_setup_and_explicit_visibility", "gap_security_negative_replies_and_queue_bounds",
     "gap_connection_admission_is_not_establishment",
+    "att_database_validation_and_link_lifecycle", "att_discovery_mixed_uuid_and_groups",
+    "att_read_blob_multiple_and_base_uuid", "att_mtu_bounds_and_errors",
+    "att_security_and_notify_only_protection", "att_deferred_write_ack_and_stale_completion",
+    "att_prepare_execute_atomic_and_cancel", "att_prepare_limits_oom_and_deferred_execute",
+    "att_cccd_per_client_bonds_and_indications", "att_cccd_queued_transaction_and_error",
+    "att_buffer_pins_oom_and_timeouts", "att_command_rules_and_bad_dynamic_read",
+    "att_runtime_bearer_fragmentation_and_disconnect",
+    "att_generated_requests_and_resource_reclamation",
 ]
 
 

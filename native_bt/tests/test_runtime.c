@@ -1,4 +1,5 @@
 #include "dbt_gap.h"
+#include "dbt_att_bearer.h"
 #ifdef _WIN32
 #define EXPORT __declspec(dllexport)
 #else
@@ -20,6 +21,9 @@ static unsigned done_calls;
 static dbt_tx_outcome_t last_tx_outcome;
 static dbt_command_outcome_t last_command_outcome;
 static uint8_t last_status;
+static dbt_att_server_t att_server;
+static dbt_att_bearer_t att_bearer;
+static unsigned att_errors;
 static void zero(void *data, unsigned size) { uint8_t *p=data; for(unsigned i=0;i<size;++i)p[i]=0; }
 static void copy(uint8_t *out,const uint8_t *in,unsigned size){for(unsigned i=0;i<size;++i)out[i]=in[i];}
 static void w16(uint8_t *p,uint16_t v){p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);}
@@ -279,4 +283,43 @@ EXPORT int test_gap_connection_admission_is_not_establishment(void){
     CHECK(dbt_gap_disconnect(&gap,&link,0)==DBT_INVALID);
     CHECK(dbt_gap_disconnect(&gap,&link,0x13)==DBT_OK);dbt_runtime_poll(&p->runtime,++clock_ms,8,0);
     CHECK(dbt_read_le16(p->wire+1)==0x0406 && p->wire[4]==0x23 && p->wire[6]==0x13);return 0;
+}
+
+static void att_fixed(void *context,const dbt_link_t *link,uint16_t cid,const uint8_t *bytes,uint16_t size){
+    (void)context;if(dbt_att_bearer_receive(&att_bearer,link,cid,bytes,size)!=DBT_OK)++att_errors;
+}
+static void att_link(void *context,const dbt_link_change_t *change){
+    link_change(context,change);if(dbt_att_bearer_link(&att_bearer,change)!=DBT_OK)++att_errors;
+}
+static void att_pump(unsigned rounds){for(unsigned i=0;i<rounds;++i){dbt_att_bearer_poll(&att_bearer,clock_ms);pump(1);}}
+EXPORT int test_att_runtime_bearer_fragmentation_and_disconnect(void){
+    clock_ms=0;int r=fixture(0);if(r)return r;r=fixture(1);if(r)return r;
+    add_link(&peers[0],1,true);add_link(&peers[1],1,true);
+    CHECK(dbt_channels_register_fixed(&peers[0].runtime.channels,DBT_LINK_LE,4)==DBT_OK);
+    static uint8_t value[100];for(unsigned i=0;i<100;++i)value[i]=(uint8_t)(i*7u);
+    static const uint8_t uuid[]={0xed,0xff};
+    dbt_attribute_t attribute={0x30,DBT_ATT_READ,100,100,0,2,0,uuid,value};
+    dbt_att_hooks_t hooks={0};hooks.context=&peers[1];hooks.allocate=allocate;hooks.release=release;
+    CHECK(dbt_att_init(&att_server,&attribute,1,hooks,517,128)==DBT_OK);
+    zero(&att_bearer,sizeof(att_bearer));att_errors=0;
+    CHECK(dbt_att_bearer_init(&att_bearer,&peers[1].runtime,&att_server)==DBT_OK);
+    peers[1].runtime.hooks.channels.fixed_data=att_fixed;peers[1].runtime.hooks.link=att_link;
+    static const uint8_t mtu_request[]={2,5,2};
+    CHECK(dbt_runtime_send_fixed(&peers[0].runtime,1,4,mtu_request,3,0,0)==DBT_OK);att_pump(20);
+    CHECK(peers[0].received_size==3 && peers[0].received[0]==3 && att_server.connections[0].mtu==517);
+    static const uint8_t read_request[]={0x0a,0x30,0};
+    CHECK(dbt_runtime_send_fixed(&peers[0].runtime,1,4,read_request,3,0,0)==DBT_OK);att_pump(40);
+    CHECK(peers[0].received_size==101 && peers[0].received[0]==0x0b && att_errors==0);
+    for(unsigned i=0;i<100;++i)CHECK(peers[0].received[i+1]==value[i]);
+    CHECK(peers[0].allocated==peers[0].released && peers[1].allocated==peers[1].released);
+    CHECK(peers[0].integrity_errors==0 && peers[1].integrity_errors==0);
+    peers[1].runtime.acl.pools[1].available=0;
+    CHECK(dbt_runtime_send_fixed(&peers[0].runtime,1,4,read_request,3,0,0)==DBT_OK);att_pump(8);
+    CHECK(att_bearer.bindings[0].active && att_server.connections[0].request_busy);
+    CHECK(dbt_att_bearer_clear(&att_bearer)==DBT_BUSY);
+    CHECK(dbt_att_bearer_wait_ms(&att_bearer,clock_ms)>29000);
+    uint8_t disconnected[]={0,1,0,0x13};CHECK(event(&peers[1],5,disconnected,4)==DBT_OK);
+    dbt_runtime_poll(&peers[1].runtime,++clock_ms,8,4);
+    CHECK(!att_bearer.bindings[0].active && !att_server.connections[0].used && att_errors==0);
+    CHECK(peers[1].allocated==peers[1].released && dbt_att_bearer_clear(&att_bearer)==DBT_OK);return 0;
 }

@@ -1,6 +1,9 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include "dbt_gap.h"
+#ifdef DBT_PROBE_GATT_TEST
+#include "probe_gatt.h"
+#endif
 #include "esp_bt.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -76,6 +79,10 @@ void app_main(void) {
     dbt_transport_t transport = { 0, transport_ready, transport_send };
     dbt_runtime_hooks_t hooks = {0};
     hooks.allocate = allocate_rx; hooks.release = release_rx; hooks.packet = observe;
+#ifdef DBT_PROBE_GATT_TEST
+    hooks.link = probe_gatt_link;
+    hooks.channels.fixed_data = probe_gatt_receive;
+#endif
     if (dbt_runtime_init(&runtime, transport, hooks, 4096, 2000) != DBT_OK) {
         ESP_LOGE(tag, "core initialization failed");
         return;
@@ -84,6 +91,9 @@ void app_main(void) {
         .advertising = {2, 1, 2}, .advertising_size = 3,
         .advertising_minimum = 0x80, .advertising_maximum = 0x100 };
     dbt_gap_hooks_t gap_hooks = {0};
+#ifdef DBT_PROBE_GATT_TEST
+    probe_gatt_advertisement(&gap_config);
+#endif
     if (dbt_gap_init(&gap, &runtime.host, gap_config, gap_hooks) != DBT_OK) {
         ESP_LOGE(tag, "GAP initialization failed");
         return;
@@ -102,11 +112,33 @@ void app_main(void) {
     dbt_host_t *host = &runtime.host;
     dbt_host_state_t previous = DBT_HOST_IDLE;
     dbt_gap_state_t previous_gap = DBT_GAP_IDLE;
+#ifdef DBT_PROBE_GATT_TEST
+    bool gatt_initialized = false, gatt_reported = false;
+#endif
     for (;;) {
         uint32_t now = now_ms();
         dbt_runtime_poll(&runtime, now, 8, 8);
+#ifdef DBT_PROBE_GATT_TEST
+        if (runtime.ready && !gatt_initialized) {
+            if (probe_gatt_init(&runtime, &gap) != DBT_OK) {
+                dbt_runtime_abort(&runtime, DBT_FAULT_BAD_RESPONSE);
+            } else gatt_initialized = true;
+        }
+        if (gatt_initialized) probe_gatt_poll(now);
+#endif
         if (runtime.ready && gap.state == DBT_GAP_IDLE) (void)dbt_gap_start(&gap);
         dbt_gap_poll(&gap, now);
+#ifdef DBT_PROBE_GATT_TEST
+        if (gatt_initialized && gap.state == DBT_GAP_READY && !gap.advertising &&
+            !gap.advertising_pending && !probe_gatt_connected())
+            (void)dbt_gap_set_advertising(&gap, true);
+        if (gap.advertising && !gatt_reported) {
+            gatt_reported = true;
+            printf("{\"probe\":\"gatt_probe_ready\",\"att_mtu\":517,\"gatt_bytes\":%u,"
+                   "\"diagnostic_only\":true,\"bonding_ready\":false,\"audio_ready\":false}\n",
+                   probe_gatt_bytes());
+        }
+#endif
         if (host->state != previous) {
             previous = host->state;
             if (host->state == DBT_HOST_IDENTIFIED) {
@@ -131,12 +163,16 @@ void app_main(void) {
         if (gap.state != previous_gap) {
             previous_gap = gap.state;
             printf("{\"probe\":\"gap_state\",\"state\":%u,\"controller_status\":%u,"
-                   "\"profiles_ready\":false,\"advertising\":false,\"classic_scan\":0}\n",
-                   (unsigned)gap.state, gap.last_status);
+                   "\"profiles_ready\":false,\"advertising\":%s,\"classic_scan\":%u}\n",
+                   (unsigned)gap.state, gap.last_status, gap.advertising ? "true" : "false", gap.classic_scan);
         }
         uint32_t wait = dbt_runtime_wait_ms(&runtime, now_ms());
         uint32_t gap_wait = dbt_gap_wait_ms(&gap);
         if (gap_wait < wait) wait = gap_wait;
+#ifdef DBT_PROBE_GATT_TEST
+        uint32_t att_wait = probe_gatt_wait_ms(now_ms());
+        if (att_wait < wait) wait = att_wait;
+#endif
         if (wait == 0) continue;
         TickType_t ticks = portMAX_DELAY;
         if (wait != UINT32_MAX) {

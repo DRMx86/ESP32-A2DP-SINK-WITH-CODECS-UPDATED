@@ -62,7 +62,7 @@ documents this event/state-machine organization and configurable memory pools.
 | L2CAP LE | `src/l2cap.c` | ATT/SMP/signaling fixed channels; connection-parameter requests; LE credit-based channels when enabled | Fixed CID registration/routing and central-side parameter policy callback implemented; ATT/SMP and credit channels pending |
 | Classic pairing/bonding | `src/hci.c`, `src/classic/btstack_link_key_db_tlv.c` | SSP/PIN events, IO capabilities, link-key lifecycle, encryption/authentication/key-size state and persistence | Pending; no permissive placeholder pairing implementation |
 | BLE SMP | `src/ble/sm.c`, `src/ble/le_device_db_tlv.c` | Pairing, bonding, encryption keys, privacy, signing, secure connections and authenticated security policy where supported | Pending |
-| ATT and GATT server | `src/ble/att_db.c`, `src/ble/att_dispatch.c`, `src/ble/att_server.c` | MTU, attribute permissions/security, errors, reads/writes, prepare/execute, per-link CCCD, notify/indicate confirmation, service changes | Pending; must preserve the app's unified control/status/meter and OTA behavior |
+| ATT and GATT server | `src/ble/att_db.c`, `src/ble/att_dispatch.c`, `src/ble/att_server.c` | MTU, attribute permissions/security, errors, reads/writes, prepare/execute, per-link CCCD, notify/indicate confirmation, service changes | Owned LE ATT server/bearer implemented and diagnostic RF read/write/notify run passed; product control/OTA binding, real bonds, robust caching and advanced features pending |
 | GATT client | `src/ble/gatt_client.c` | Discovery, procedures, reliable writes, notification subscriptions, timers | Pending; module must be available without allocating unused connection state |
 | SDP | `src/classic/sdp_server.c`, `src/classic/sdp_client.c` | Records, data elements, continuation tokens, bounds, service discovery | Pending |
 | AVDTP and A2DP | `src/classic/avdtp.c`, `src/classic/avdtp_sink.c`, `src/classic/a2dp_sink.c` | Endpoint/CIE negotiation, transactions, signaling fragmentation, stream lifecycle, media framing and codec worker handoff | Pending; preserve SBC/AAC/aptX/aptX-HD/aptX-LL/LDAC/Opus and add LHDC V5 |
@@ -162,7 +162,7 @@ insufficient evidence of codec playback or Classic/BLE coexistence.
 
 ## Current lower-layer evidence
 
-- 51 native groups pass on Windows/Linux, including paired runtime channel setup,
+- 65 native groups pass on Windows/Linux, including paired runtime channel setup,
   fragmented transfer, disconnect, separate Classic/LE credit stalls and 20,000
   variable-length packets over two concurrent threads. ASan/UBSan passes on Linux.
 - ESP32 probe links with controller-only host selection and dual-mode controller
@@ -175,8 +175,9 @@ insufficient evidence of codec playback or Classic/BLE coexistence.
 - The COM6 target probe completed eight identification and nine GAP configuration
   commands. Original application/bootloader/data layout were preserved; only the
   trial slot and one selector sector were written and verified by readback.
-- No independent RF/profile/audio result or comparable full-stack footprint is
-  claimed. Latest sanitized evidence and remaining work are in [progress](PROGRESS.md)
+- Independent diagnostic LE ATT/GATT testing passed; Classic RF/audio/coexistence
+  and comparable full-stack footprint remain unqualified. Latest evidence is in
+  [ATT/GATT](ATT_GATT.md), [progress](PROGRESS.md)
   and [release gates](RELEASE_READINESS.md).
 
 Receipts live at fixed paths under `_build/`; do not create timestamped duplicates.

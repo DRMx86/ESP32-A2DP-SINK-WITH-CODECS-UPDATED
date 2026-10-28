@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 option(DBT_PROBE_LHDC_BUILD "Also compile the separate user-owned LHDC decoder component" OFF)
+option(DBT_PROBE_GATT_TEST "Enable the diagnostic unbonded LE echo/counter service" OFF)
 if(NOT DEFINED ENV{IDF_PATH})
     get_filename_component(local_idf "${CMAKE_CURRENT_LIST_DIR}/../../esp-idf" ABSOLUTE)
     set(ENV{IDF_PATH} "${local_idf}")

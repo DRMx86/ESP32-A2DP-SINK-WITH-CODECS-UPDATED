@@ -5,7 +5,7 @@ with simultaneous operation through the original ESP32's Espressif dual-mode
 controller. BTstack is inspected only in `../reference/btstack`.
 
 Current milestone: a portable C11 HCI/ACL/L2CAP channel runtime, basic GAP setup and an isolated
-ESP-IDF 5.5.2 probe. This is **not yet an operational Bluetooth host or an audio
+ESP-IDF 5.5.2 probe. This is **not yet a complete Bluetooth host or a product audio
 firmware replacement**. The staged audio application still uses Bluedroid and
 includes the separately requested integer DSP and codec-memory changes.
 
@@ -52,11 +52,17 @@ Classic credits while LE data/control continue. `dbt_gap` has explicit incoming
 admission and security-owner hooks; no bonding/security/profile implementation is
 implied by enabling SSP in the controller.
 
-There are 51 native groups, including the concurrent queue test. Run
+There are 65 native groups, including the concurrent queue test. Run
 `python native_bt/tools/test_stack_linux.py --host HOST --user USER` for Linux
 normal/ASan/UBSan checks; the password prompt is session-only. The default probe
 does not require the separate LHDC checkout. `build_probe.ps1 -WithLhdc` enables
 its optional decoder compilation without adding it to the host loop.
+
+`build_probe.ps1 -WithGatt` enables the independent diagnostic LE ATT server.
+Live Linux testing passed discovery, 200 writes with periodic readbacks, payloads
+through 512 bytes, a 512-byte reliable write, and 208 notifications. The measured
+BLE timings are in [ATT/GATT evidence](docs/ATT_GATT.md); no audio, bonding or
+simultaneous Classic/BLE pass is implied. Product control/OTA binding is pending.
 
 See [release gates](docs/RELEASE_READINESS.md) before publishing a replacement
 firmware. This milestone remains an incomplete development implementation.

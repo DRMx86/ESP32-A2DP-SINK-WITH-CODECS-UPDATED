@@ -2,8 +2,9 @@
 
 Updated 2026-10-28. **Development milestone; replacement firmware is not ready to ship.**
 
-The existing audio application uses Bluedroid. The independent probe has no audio
-or GATT profiles. Keep these deliverables distinct in GitHub branches, binaries,
+The existing audio application uses Bluedroid. The independent probe has a diagnostic
+LE GATT service when explicitly enabled, but no product audio/control/OTA profiles.
+Keep these deliverables distinct in GitHub branches, binaries,
 release notes and test reports. A successful lower-layer probe does not migrate
 the product application.
 
@@ -15,11 +16,11 @@ the product application.
 | Classic + BLE scheduling | Separate/shared credit accounting; independent-link admission tests | Simultaneous RF connections and sustained traffic |
 | Controller setup/GAP | Nine-command configuration; explicit scan/advertising control; negative security replies | Outgoing procedures, discovery, privacy and procedure recovery |
 | Pairing and bonds | Admission/security hooks only | Classic SSP/PIN/key lifecycle; LE SMP, secure connections, keys and persistent bonds |
-| BLE application | Fixed-channel routing only | ATT/GATT, permissions, per-link CCCDs, notifications/indications, MTU, reliable writes, control/meter/upload/OTA migration |
+| BLE application | Owned ATT server/bearer: discovery, MTU, reads/writes, queued writes, permissions, per-client CCCDs and notification/indication handling; diagnostic live reads/writes/notifications passed | Product control/meter/upload/OTA migration, real security/bond integration, GATT client and optional advanced features |
 | Classic audio discovery/control | Basic PSM channels only | SDP, AVDTP/A2DP, AVCTP/AVRCP, stream negotiation/media framing and worker handoff |
 | Audio codec parity | Separate Bluedroid AAC/Opus memory changes and DSP tests | All codec configurations, LHDC V5 A2DP integration, lazy switch peaks and allocation failures on ESP32 |
 | EQ persistence and playback | Immediate packed NVS commit; integer ramps; host tests | Power-loss persistence and physical continuous audio during repeated real flash commits |
-| Interoperability/audio | No qualifying playback/coexistence run | Firefox music from Linux, verified Classic+LE bearers, continuous reads/writes/notifications at every negotiated codec/configuration |
+| Interoperability/audio | Diagnostic Linux LE ATT/GATT run passed; no qualifying playback/coexistence run | Firefox music from Linux, verified simultaneous Classic+LE bearers, continuous reads/writes/notifications at every negotiated codec/configuration |
 | Feature coverage | Explicit architecture inventory | ERTM/LE credit channels and other requested profiles/roles; reject unsupported modes accurately |
 | Resource advantage | Bounded disk outputs; reported object allocations | Compare RAM/CPU/latency against equivalent enabled features and workloads, including switch peaks |
 

@@ -28,11 +28,12 @@ it does not publish or replace the locally modified Bluedroid audio application.
 | --- | --- | --- |
 | BTstack | Pinned `51e11ce3692abfe31b4ee3d66cffdeb1ae1626f2`; shallow sparse checkout ~70.6 MiB | Reference only |
 | HCI | Owned FIFO, framing, eight-command identification, copied four-slot general command queue, completion/status distinction, credit gates and timeout/abort callbacks | Native/ESP32 builds; target probe result is recorded separately below |
-| Runtime/ACL | HCI events now drive Classic/LE links, shared/separate credits, completion validation, disconnect cleanup and L2CAP dispatch in one owner | Paired-peer and credit-stall simulation passes; RF interoperability pending |
+| Runtime/ACL | HCI events drive Classic/LE links, credits, disconnect cleanup and L2CAP dispatch in one owner; live LE ATT round trips passed | Classic RF channel establishment and simultaneous RF scheduling remain unqualified |
 | Basic L2CAP | Lazy RX reassembly; incoming/outgoing Classic channels; both configuration directions, MTUs, continuation, option negotiation, disconnect, RTX/ERTX, duplicate handling and information responses | Basic mode only; ERTM/LE credit channels and production RX flow control pending |
 | Scheduling | One borrowed outbound SDU per connection, round-robin ACL admission, per-link signaling selection, full-PDU signaling commit and immutable transport buffer lifetime | Simulated independent Classic/LE pools and asynchronous transports; not measured radio fairness |
 | GAP | Event masks, LE host support, local name/class, SSP enable, legacy advertising parameters/data/scan response; explicit Classic scan and LE advertising controls | Incoming Classic policy hook; security requests default to negative replies without a security owner. Bonding/privacy/initiator procedures pending |
-| Tests | 51 groups pass on Windows/Linux, 20,000 concurrent FIFO packets; Linux ASan/UBSan passes including paired establishment/data/disconnect | Host behavior and memory safety, not RF/profile qualification |
+| ATT/GATT server | Owned LE ATT server and runtime bridge; discovery, reads/blobs/multiple, MTU 517, writes/commands, prepare/execute/cancel, per-client CCCDs, security policy, notify/indicate, deferred worker completion | Product command/OTA binding, real security/bond store, GATT client/EATT/signed writes/robust caching pending |
+| Tests | 65 groups pass on Windows/Linux, including 10,240 generated ATT inputs, paired bearer tests and 20,000 concurrent FIFO packets; Linux ASan/UBSan passes | Host behavior and memory safety; separate limited RF evidence below |
 | Integer DSP | Flash coefficient tables for 13 rates; Q4.28 coefficients/Q5.27 headroom, fractional error carry, 20 ms ramps, render-owned histories, atomic controls | Embedded CPU and audible tests pending |
 | DSP numerical tests | 36 cases at 44.1/48/96/192 kHz; max magnitude error ~0.00000145 dB against the coefficient response; native state 1128 bytes | Not ESP32 timing or acoustic proof |
 | C++ integration | Actual DSP/storage headers: normal, ASan/UBSan and ThreadSanitizer pass with concurrent control/render/meter requests | NVS is mocked; no physical power-loss test |
@@ -52,7 +53,8 @@ measurements of the selected path, not total codec RAM or embedded performance.
 ## Still pending
 
 GAP initiator/discovery procedures and recovery; production RX flow control;
-L2CAP modes beyond Basic; Classic security and BLE SMP/bonding/privacy; ATT/GATT; SDP;
+L2CAP modes beyond Basic; Classic security and BLE SMP/bonding/privacy;
+product ATT/GATT integration, GATT client/advanced features; SDP;
 AVDTP/A2DP/AVRCP; remaining profiles; complete app migration; concurrent Classic/BLE
 hardware validation; equivalent-feature memory/CPU/latency comparisons.
 
@@ -102,6 +104,22 @@ block 110592 bytes. These exclude unimplemented profiles/audio and do not suppor
 an equivalent-feature size/speed comparison. No advertising/scan was enabled and
 no independent RF link was tested. Receipt: `_build/hardware/COM6-probe-trial.json`.
 
+Subsequent `-WithGatt` probing added a diagnostic unbonded LE echo/counter service.
+The server/bearer metadata adds 784 bytes on ESP32. A direct Linux kernel LE
+connection negotiated MTU 517 and read the name. Linux BlueZ then completed
+discovery, 200 request writes, 20 periodic readbacks, lengths 0/1/20/64/244/512,
+a 512-byte reliable write and 208 received notifications in 29.6 seconds.
+LE connected and BR/EDR disconnected were observed separately. Median/max write
+RTT was 100.114/300.234 ms; the maximum notification interval was 707.809 ms.
+These results do not prove sustained throughput, smooth audio, bonding or coexistence.
+The exact image hash is bound to `_build/hardware/linux-gatt-live.json`.
+
+Earlier BlueZ generic/separate-bearer attempts timed out; traces showed no Linux
+HCI connection command. Selecting LE through `Device1.PreferredBearer=le` then
+`Device1.Connect` succeeded. The experimental API was enabled temporarily only
+with zero active Bluetooth connections, then the original daemon arguments were
+restored. Failure receipts/captures remain private under the fixed `_build` paths.
+
 After this probe, the audio trial was restored to OTA1. Complete image/selector
 readback and its readiness marker were verified at 115200 baud. The board is
 running `audio_candidate_integer_dsp1` with Bluedroid, not the independent probe.
@@ -122,13 +140,14 @@ Remote test sources reuse `~/.cache/native_bt/`; no SDK/media/credentials upload
 SSH dependencies are confined to `_build/python_deps`; compiler cache writes are
 disabled in build wrappers. Latest generated size ~352 MiB plus ~71 MiB reference.
 
-Latest focus: independent host runtime and GAP integration. The controller-only
-probe now calls this runtime; it configures the controller but deliberately keeps
-advertising and Classic scan disabled until profiles/security exist. Its default
+Latest focus: independent ATT/GATT server and bearer integration. The controller-only
+probe defaults to configuring the controller with advertising and Classic scan
+disabled. `build_probe.ps1 -WithGatt` opts into diagnostic LE advertising; it is
+not the product control/OTA/audio profile. Its default
 build no longer depends on the separate LHDC checkout; use `build_probe.ps1 -WithLhdc`
 for the optional decoder object build. There is no decoder on the host loop.
 
-Next: security/bond store and ATT/GATT; SDP/AVDTP/A2DP/AVRCP; app handoff and live
+Next: security/bond store and product GATT integration; SDP/AVDTP/A2DP/AVRCP; app handoff and live
 coexistence. Flash-stall analysis preserving immediate NVS, LHDC A2DP integration,
 and remaining codec work are still required. No full-stack speed/memory superiority
 or production release readiness is established. See [release gates](RELEASE_READINESS.md).
