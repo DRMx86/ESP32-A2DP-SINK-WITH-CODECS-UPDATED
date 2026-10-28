@@ -1,0 +1,5 @@
+set(probe_dependencies native_bt bt nvs_flash esp_timer)
+if(DBT_PROBE_LHDC_BUILD)
+    list(APPEND probe_dependencies lhdcv5_decoder)
+endif()
+idf_component_register(SRCS "probe_main.c" INCLUDE_DIRS "." PRIV_REQUIRES ${probe_dependencies})

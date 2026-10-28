@@ -1,0 +1,159 @@
+"""Compile and execute the actual portable C core. One reusable output directory."""
+import argparse
+import ctypes
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+TESTS = [
+    "hci_framing", "command_bounds", "queue_wrap_and_copy",
+    "control_reserve_preserves_order", "bootstrap_separate_pools",
+    "bootstrap_shared_pool", "transport_and_credit_gates",
+    "status_is_not_completion", "deadlines_wrap_and_credit_stall",
+    "rejection_and_short_return", "requires_dual_mode_features",
+    "rx_overrun_fails_closed", "bounded_dispatch_and_order",
+    "bad_ingress_and_hardware_error", "decode_generated_lengths",
+    "acl_shared_and_separate_credits", "acl_disconnect_and_handle_reuse",
+    "acl_completed_event_transaction", "acl_admission_and_encryption",
+    "acl_link_limits_and_enhanced_le",
+    "l2cap_complete_pdu_zero_allocation", "l2cap_fragmented_and_interleaved",
+    "l2cap_reassembly_limits_and_oom", "l2cap_disconnect_and_deadline",
+    "l2cap_tx_backpressure_and_roundtrip", "l2cap_tx_credit_stall_and_stale_generation",
+    "fixed_dsp_flat_and_integer_boundaries", "fixed_dsp_eq_transition_continuity",
+    "fixed_dsp_controls_and_full_scale", "fixed_dsp_meter_and_db",
+    "channels_outgoing_and_asymmetric_mtu", "channels_incoming_and_duplicate_requests",
+    "channels_option_errors_hints_and_continuation", "channels_response_continuation_and_mtu_retry",
+    "channels_timers_pending_and_unsent_responses", "channels_multi_command_backpressure_and_malformed",
+    "channels_generation_and_pinned_bytes", "channels_information_security_fixed_and_le",
+    "channels_reconfiguration_and_disconnect",
+    "channels_limits_ids_and_protocol_rejections", "channels_timer_wrap_and_late_pending_bound",
+    "commands_copy_credit_status_and_rejection", "commands_queue_timeout_abort_and_late_response",
+    "runtime_paired_channel_and_fragmented_data", "runtime_dual_bearer_credit_fairness",
+    "runtime_disconnect_pins_and_partial_expiry", "runtime_control_cross_link_scheduling",
+    "gap_setup_and_explicit_visibility", "gap_security_negative_replies_and_queue_bounds",
+    "gap_connection_admission_is_not_establishment",
+]
+
+
+def build(output):
+    sources = sorted((ROOT / "src").glob("*.c")) + sorted((ROOT / "tests").glob("test_*.c"))
+    sources += [ROOT.parent / "bt_audio_sink/main/dsp/fixed_dsp.c"]
+    compiler = os.environ.get("CC") or shutil.which("clang") or shutil.which("cc")
+    if not compiler and os.name == "nt":
+        candidate = Path(os.environ["ProgramFiles"]) / "LLVM/bin/clang.exe"
+        if candidate.is_file():
+            compiler = str(candidate)
+    if not compiler:
+        raise RuntimeError("Install a C11 compiler or set CC to its executable path")
+    args = [compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "include"),
+            "-I", str(ROOT.parent / "bt_audio_sink/main/dsp")]
+    if os.name == "nt":
+        # No dependency on a Visual Studio installation or CRT startup code.
+        args += ["-ffreestanding", "-fno-builtin", "-fno-stack-protector",
+                 "-fuse-ld=lld", "-nostdlib", "-shared", "-Wl,/noentry"]
+    else:
+        args += ["-shared", "-fPIC"]
+    args += [str(path) for path in sources] + ["-o", str(output)]
+    subprocess.run(args, check=True, cwd=ROOT)
+    return sources
+
+
+def concurrent_stress(lib, count=20000):
+    lib.stress_produce.argtypes = [ctypes.c_uint32]
+    lib.stress_produce.restype = ctypes.c_int
+    lib.stress_consume.restype = ctypes.c_int
+    lib.stress_begin()
+    errors = []
+    stop = threading.Event()
+    deadline = time.monotonic() + 20
+
+    def produce():
+        for sequence in range(count):
+            while not stop.is_set():
+                status = lib.stress_produce(sequence)
+                if status == 0:
+                    break
+                if status != 3 or time.monotonic() > deadline:
+                    errors.append(f"producer status={status} sequence={sequence}")
+                    stop.set()
+                    return
+                time.sleep(0)
+            if stop.is_set():
+                return
+
+    def consume():
+        received = 0
+        while received < count and not stop.is_set():
+            status = lib.stress_consume()
+            if status == 0:
+                received += 1
+            elif status != 1 or time.monotonic() > deadline:
+                errors.append(f"consumer status={status} received={received}")
+                stop.set()
+            else:
+                time.sleep(0)
+
+    workers = [threading.Thread(target=produce, daemon=True), threading.Thread(target=consume, daemon=True)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(22)
+    if any(worker.is_alive() for worker in workers):
+        stop.set()
+        errors.append("thread deadline exceeded")
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    return count
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "_build/host")
+    args = parser.parse_args()
+    output_dir = args.output_dir.resolve()
+    # Keep artifacts inside the one project-owned tree even on accidental invocation.
+    output_dir.relative_to(ROOT / "_build")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output = output_dir / ("native_bt_tests.dll" if os.name == "nt" else "native_bt_tests.so")
+    sources = build(output)
+    lib = ctypes.CDLL(str(output))
+    results = []
+    for name in TESTS:
+        function = getattr(lib, "test_" + name)
+        function.restype = ctypes.c_int
+        result = function()
+        results.append({"name": name, "passed": result == 0, "failed_line": result or None})
+        print(f"{'PASS' if result == 0 else 'FAIL'} {name}" + (f" line {result}" if result else ""), flush=True)
+    try:
+        packets = concurrent_stress(lib)
+        results.append({"name": "concurrent_spsc", "passed": True, "packets": packets})
+        print(f"PASS concurrent_spsc ({packets} packets on two threads)", flush=True)
+    except RuntimeError as error:
+        results.append({"name": "concurrent_spsc", "passed": False, "error": str(error)})
+    lib.test_host_bytes.restype = ctypes.c_uint32
+    lib.test_queue_bytes.restype = ctypes.c_uint32
+    report = {
+        "scope": "native C behavioral tests only; no firmware or RF validation",
+        "passed": all(item["passed"] for item in results),
+        "host_bytes_native_abi": lib.test_host_bytes(),
+        "queue_bytes_native_abi": lib.test_queue_bytes(),
+        "tests": results,
+        "source_sha256": {str(Path(os.path.relpath(path, ROOT))): hashlib.sha256(path.read_bytes()).hexdigest()
+                          for path in sources + sorted((ROOT / "include").glob("*.h")) +
+                          list((ROOT.parent / "bt_audio_sink/main/dsp").glob("fixed_dsp.*")) +
+                          [ROOT.parent / "bt_audio_sink/main/dsp/fixed_dsp_tables.inc"]},
+    }
+    (output_dir / "results.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"{sum(item['passed'] for item in results)}/{len(results)} passed; host object {report['host_bytes_native_abi']} bytes (native ABI)")
+    return 0 if report["passed"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
