@@ -1,5 +1,6 @@
 #include "dbt_gap.h"
 #include "dbt_att_bearer.h"
+#include "dbt_sdp_bearer.h"
 #ifdef _WIN32
 #define EXPORT __declspec(dllexport)
 #else
@@ -322,4 +323,100 @@ EXPORT int test_att_runtime_bearer_fragmentation_and_disconnect(void){
     dbt_runtime_poll(&peers[1].runtime,++clock_ms,8,4);
     CHECK(!att_bearer.bindings[0].active && !att_server.connections[0].used && att_errors==0);
     CHECK(peers[1].allocated==peers[1].released && dbt_att_bearer_clear(&att_bearer)==DBT_OK);return 0;
+}
+
+EXPORT int test_runtime_channel_close_returns_borrowed_data(void){
+    clock_ms=0;int r=fixture(0);if(r)return r;r=fixture(1);if(r)return r;
+    add_link(&peers[0],1,false);add_link(&peers[1],1,false);
+    dbt_service_t service={0x19,256,48,DBT_SECURITY_NONE};
+    CHECK(dbt_channels_register(&peers[1].runtime.channels,service)==DBT_OK);
+    uint16_t cid=0;CHECK(dbt_channels_open(&peers[0].runtime.channels,1,0x19,256,48,DBT_SECURITY_NONE,clock_ms,&cid)==DBT_OK);
+    pump(70);CHECK(peers[0].opens==1 && peers[1].opens==1);
+    static uint8_t payload[193];for(unsigned i=0;i<193;++i)payload[i]=(uint8_t)i;
+    CHECK(dbt_runtime_send(&peers[0].runtime,1,cid,payload,193,tx_done,0)==DBT_OK);
+    dbt_runtime_poll(&peers[0].runtime,++clock_ms,8,1);
+    CHECK(!peers[0].ready && peers[0].runtime.tx[0].active && done_calls==0);
+    CHECK(dbt_channels_close(&peers[1].runtime.channels,1,peers[1].cid,clock_ms)==DBT_OK);
+    pump(30);
+    CHECK(done_calls==1 && last_tx_outcome==DBT_TX_ABORTED && !peers[0].runtime.tx[0].active);
+    CHECK(peers[1].data_calls==0 && peers[1].allocated==peers[1].released);
+    CHECK(dbt_acl_find(&peers[0].runtime.acl,1)!=0 && peers[0].runtime.ready && peers[1].runtime.ready);
+    CHECK(peers[0].integrity_errors==0 && peers[1].integrity_errors==0);return 0;
+}
+
+static dbt_sdp_t sdp_server;
+static dbt_sdp_bearer_t sdp_bearer;
+static unsigned sdp_errors;
+static bool sdp_oom;
+static uint8_t sdp_text[303];
+static const uint8_t sdp_class[]={0x35,3,0x19,0xff,0x01};
+static dbt_sdp_attribute_t sdp_attributes[2];
+static dbt_sdp_record_t sdp_record;
+static void sdp_data(void *context,const dbt_channel_t *channel,const uint8_t *bytes,uint16_t size){
+    data(context,channel,bytes,size);
+    if(dbt_sdp_bearer_receive(&sdp_bearer,channel,bytes,size)!=DBT_OK)++sdp_errors;
+}
+static void sdp_channel(void *context,dbt_channel_event_t kind,const dbt_channel_t *snapshot,dbt_channel_reason_t reason,uint16_t result){
+    channel(context,kind,snapshot,reason,result);dbt_sdp_bearer_event(&sdp_bearer,kind,snapshot);
+}
+static uint8_t *sdp_allocate(void *context,uint16_t size){return sdp_oom?0:allocate(context,size);}
+static int sdp_fixture(void){
+    clock_ms=0;int r=fixture(0);if(r)return r;r=fixture(1);if(r)return r;
+    add_link(&peers[0],1,false);add_link(&peers[1],1,false);
+    sdp_text[0]=0x26;sdp_text[1]=1;sdp_text[2]=44;
+    for(unsigned i=3;i<sizeof(sdp_text);++i)sdp_text[i]=(uint8_t)(i*17u);
+    sdp_attributes[0]=(dbt_sdp_attribute_t){1,sizeof(sdp_class),sdp_class};
+    sdp_attributes[1]=(dbt_sdp_attribute_t){0x100,sizeof(sdp_text),sdp_text};
+    sdp_record=(dbt_sdp_record_t){0x10000,sdp_attributes,2};
+    CHECK(dbt_sdp_init(&sdp_server,&sdp_record,1,1)==DBT_OK);
+    zero(&sdp_bearer,sizeof(sdp_bearer));sdp_errors=0;sdp_oom=false;
+    CHECK(dbt_sdp_bearer_init(&sdp_bearer,&peers[1].runtime,&sdp_server,672)==DBT_OK);
+    peers[1].runtime.hooks.channels.data=sdp_data;peers[1].runtime.hooks.channels.event=sdp_channel;
+    peers[1].runtime.hooks.allocate=sdp_allocate;
+    uint16_t cid;
+    CHECK(dbt_channels_open(&peers[0].runtime.channels,1,1,672,48,DBT_SECURITY_NONE,clock_ms,&cid)==DBT_OK);
+    pump(70);CHECK(peers[0].opens==1 && peers[1].opens==1);
+    CHECK(peers[1].allocated==peers[1].released && dbt_sdp_bearer_wait_ms(&sdp_bearer)==UINT32_MAX);
+    return 0;
+}
+static void sdp_pump(unsigned rounds){
+    for(unsigned i=0;i<rounds;++i){if(dbt_sdp_bearer_poll(&sdp_bearer)!=DBT_OK)++sdp_errors;pump(1);}
+}
+static const uint8_t sdp_attribute_request[]={4,0x12,0x34,0,14,0,1,0,0,0xff,0xff,0x35,5,10,0,0,0xff,0xff,0};
+EXPORT int test_sdp_runtime_fragmentation_and_lazy_reply(void){
+    int r=sdp_fixture();if(r)return r;
+    CHECK(dbt_runtime_send(&peers[0].runtime,1,peers[0].cid,sdp_attribute_request,sizeof(sdp_attribute_request),0,0)==DBT_OK);
+    sdp_pump(80);
+    CHECK(!sdp_errors && peers[0].received_size==333 && peers[0].received[0]==5);
+    CHECK(peers[0].received[1]==0x12 && peers[0].received[2]==0x34 && peers[0].received[7]==0x36);
+    /* 3-byte outer sequence header + handle (8) + class (8) + text (306). */
+    CHECK(peers[0].received[8]==1 && peers[0].received[9]==66);
+    CHECK(peers[0].received[26]==9 && peers[0].received[27]==1 && peers[0].received[28]==0);
+    CHECK(peers[0].received[29]==0x26 && peers[0].received[30]==1 && peers[0].received[31]==44);
+    for(unsigned i=0;i<300;++i)CHECK(peers[0].received[32+i]==sdp_text[3+i]);
+    CHECK(peers[1].allocated==peers[1].released && peers[0].allocated==peers[0].released);
+    CHECK(!peers[0].integrity_errors && !peers[1].integrity_errors);
+    CHECK(dbt_sdp_bearer_clear(&sdp_bearer)==DBT_OK);
+    return 0;
+}
+EXPORT int test_sdp_runtime_oom_backpressure_and_disconnect(void){
+    int r=sdp_fixture();if(r)return r;sdp_oom=true;
+    CHECK(dbt_runtime_send(&peers[0].runtime,1,peers[0].cid,sdp_attribute_request,sizeof(sdp_attribute_request),0,0)==DBT_OK);
+    sdp_pump(30);
+    CHECK(peers[0].received_size==7 && peers[0].received[0]==1 && peers[0].received[6]==6 && !sdp_errors);
+    CHECK(peers[1].allocated==0 && peers[1].released==0);
+    sdp_oom=false;peers[1].runtime.acl.pools[0].available=0;
+    CHECK(dbt_runtime_send(&peers[0].runtime,1,peers[0].cid,sdp_attribute_request,sizeof(sdp_attribute_request),0,0)==DBT_OK);
+    sdp_pump(12);
+    CHECK(sdp_bearer.replies[0].active && peers[1].runtime.tx[0].active);
+    CHECK(dbt_sdp_bearer_clear(&sdp_bearer)==DBT_BUSY);
+    const dbt_channel_t *current=dbt_channels_find(&peers[1].runtime.channels,1,peers[1].cid);CHECK(current);
+    CHECK(dbt_sdp_bearer_receive(&sdp_bearer,current,sdp_attribute_request,sizeof(sdp_attribute_request))==DBT_BUSY);
+    CHECK(dbt_sdp_bearer_wait_ms(&sdp_bearer)==UINT32_MAX);
+    uint8_t disconnected[]={0,1,0,0x13};CHECK(event(&peers[1],5,disconnected,4)==DBT_OK);
+    dbt_runtime_poll(&peers[1].runtime,++clock_ms,8,4);
+    CHECK(!sdp_bearer.replies[0].active && !sdp_bearer.replies[0].bytes);
+    CHECK(peers[1].allocated==peers[1].released && dbt_sdp_bearer_clear(&sdp_bearer)==DBT_OK);
+    CHECK(!sdp_errors && !peers[1].integrity_errors);
+    return 0;
 }

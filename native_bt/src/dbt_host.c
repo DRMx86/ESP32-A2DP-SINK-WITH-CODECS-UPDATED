@@ -21,6 +21,13 @@ static void copy_bytes(uint8_t *destination, const uint8_t *source, uint16_t siz
 static bool due(uint32_t now, uint32_t deadline) {
     return (uint32_t)(now - deadline) < 0x80000000u;
 }
+static void wipe(void *data, unsigned size) {
+    volatile uint8_t *bytes=data;for(unsigned i=0;i<size;++i)bytes[i]=0;
+}
+static bool sensitive(const dbt_hci_packet_t *packet) {
+    return packet->type==DBT_H4_EVENT && (packet->event==0x18 ||
+        (packet->event==0x3e && packet->size && packet->payload[0]==9));
+}
 
 static void fail(dbt_host_t *host, dbt_fault_t fault) {
     if (host->state != DBT_HOST_FAILED) {
@@ -32,6 +39,7 @@ static void fail(dbt_host_t *host, dbt_fault_t fault) {
         dbt_command_done_t done = command->done;
         void *context = command->context;
         uint16_t opcode = command->opcode;
+        wipe(command->parameters,sizeof(command->parameters));
         host->command_head = (uint8_t)((host->command_head + 1u) % DBT_COMMAND_SLOTS);
         --host->command_count;
         if (done) done(context, opcode, DBT_COMMAND_ABORTED, 0, 0, 0);
@@ -64,6 +72,7 @@ static void command_done(dbt_host_t *host, dbt_command_outcome_t outcome,
     dbt_command_done_t done = command->done;
     void *context = command->context;
     uint16_t opcode = command->opcode;
+    wipe(command->parameters,sizeof(command->parameters));
     host->command_head = (uint8_t)((host->command_head + 1u) % DBT_COMMAND_SLOTS);
     --host->command_count;
     host->pending_opcode = 0;
@@ -100,7 +109,8 @@ dbt_result_t dbt_host_receive(dbt_host_t *host, const uint8_t *data, uint16_t si
     if (result != DBT_OK) {
         fault = result == DBT_UNSUPPORTED ? DBT_FAULT_UNSUPPORTED_PACKET : DBT_FAULT_BAD_PACKET;
     } else {
-        result = dbt_queue_push(&host->ingress, data, size, packet.type == DBT_H4_ACL);
+        result = sensitive(&packet) ? dbt_queue_push_sensitive(&host->ingress,data,size,false) :
+            dbt_queue_push(&host->ingress, data, size, packet.type == DBT_H4_ACL);
         if (result != DBT_OK) fault = DBT_FAULT_RX_OVERRUN;
     }
     if (fault != DBT_FAULT_NONE) {
@@ -213,7 +223,11 @@ static void handle_event(dbt_host_t *host, const dbt_hci_packet_t *packet, uint3
 
 uint16_t dbt_host_poll(dbt_host_t *host, uint32_t now_ms, uint16_t rx_budget) {
     uint16_t processed = 0;
-    if (!host || host->in_poll || host->state == DBT_HOST_IDLE || host->state == DBT_HOST_FAILED) return 0;
+    if (!host || host->in_poll) return 0;
+    if(host->tx_retained && host->transport.can_send(host->transport.context)) {
+        wipe(host->tx_command,sizeof(host->tx_command));host->tx_retained=false;
+    }
+    if(host->state == DBT_HOST_IDLE || host->state == DBT_HOST_FAILED)return 0;
     dbt_fault_t ingress_fault = (dbt_fault_t)atomic_load_explicit(&host->ingress_fault, memory_order_acquire);
     if (ingress_fault != DBT_FAULT_NONE) { fail(host, ingress_fault); return 0; }
     if (host->state == DBT_HOST_PROBING && due(now_ms, host->deadline_ms)) {
@@ -235,20 +249,23 @@ uint16_t dbt_host_poll(dbt_host_t *host, uint32_t now_ms, uint16_t rx_budget) {
         ++host->packets_processed;
         if (packet.type == DBT_H4_EVENT) handle_event(host, &packet, now_ms);
         if (host->observer != 0) host->observer(host->observer_context, &packet);
+        if(sensitive(&packet))wipe(host->rx_packet,size);
         if (host->state == DBT_HOST_FAILED) break;
     }
     if (host->state == DBT_HOST_PROBING && host->pending_opcode == 0 &&
         host->command_credits != 0 && host->transport.can_send(host->transport.context)) {
         uint16_t size = 0;
         uint16_t opcode = probes[host->probe_index].opcode;
+        wipe(host->tx_command,sizeof(host->tx_command));
         if (dbt_hci_command(opcode, 0, 0, host->tx_command, sizeof(host->tx_command), &size) != DBT_OK) {
             fail(host, DBT_FAULT_BAD_RESPONSE);
         } else if (host->transport.send(host->transport.context, host->tx_command, size)) {
+            host->tx_retained=true;
             host->pending_opcode = opcode;
             --host->command_credits;
             ++host->commands_submitted;
             host->deadline_ms = now_ms + host->timeout_ms;
-        }
+        } else wipe(host->tx_command,sizeof(host->tx_command));
     }
     if (host->state == DBT_HOST_IDENTIFIED && host->command_count) {
         dbt_command_t *command = &host->commands[host->command_head];
@@ -262,13 +279,16 @@ uint16_t dbt_host_poll(dbt_host_t *host, uint32_t now_ms, uint16_t rx_budget) {
         } else if (!host->pending_opcode && host->command_credits &&
                    host->transport.can_send(host->transport.context)) {
             uint16_t size = 0;
+            wipe(host->tx_command,sizeof(host->tx_command));
             (void)dbt_hci_command(command->opcode, command->parameters, command->size,
                                  host->tx_command, sizeof(host->tx_command), &size);
             if (host->transport.send(host->transport.context, host->tx_command, size)) {
+                host->tx_retained=true;
+                wipe(command->parameters,sizeof(command->parameters));
                 host->pending_opcode = command->opcode;
                 --host->command_credits; ++host->commands_submitted;
                 command->deadline = now_ms + host->timeout_ms;
-            }
+            } else wipe(host->tx_command,sizeof(host->tx_command));
         }
     }
     host->in_poll = false;

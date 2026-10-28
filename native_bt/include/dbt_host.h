@@ -91,7 +91,7 @@ typedef struct {
     uint8_t tx_command[259];
     dbt_command_t commands[DBT_COMMAND_SLOTS];
     uint8_t command_head, command_count;
-    bool in_poll;
+    bool in_poll, tx_retained;
 } dbt_host_t;
 
 /* All APIs except receive are single-owner, called from the host task. */

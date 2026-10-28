@@ -47,6 +47,23 @@ TESTS = [
     "att_buffer_pins_oom_and_timeouts", "att_command_rules_and_bad_dynamic_read",
     "att_runtime_bearer_fragmentation_and_disconnect",
     "att_generated_requests_and_resource_reclamation",
+    "classic_key_classification_and_configuration", "classic_pairing_policy_and_cached_key",
+    "classic_ssp_persistence_and_encryption_gates", "classic_manual_confirmation_and_rejection",
+    "classic_pin_passkey_and_timeout", "classic_oob_lazy_storage_and_bounds",
+    "classic_key_rejection_and_short_key", "classic_cached_auth_and_verified_key_size",
+    "classic_store_failure_timeout_and_forget", "classic_disconnect_generation_and_store_completion",
+    "classic_rotation_waits_for_new_cipher_and_commit", "classic_stale_cipher_query_and_command_backpressure",
+    "sensitive_queue_and_hci_buffer_lifetime",
+    "runtime_channel_close_returns_borrowed_data",
+    "classic_command_collision_waits_for_actual_events",
+    "channels_incoming_waits_for_verified_security", "channels_security_duplicates_failure_and_timeout",
+    "channels_outgoing_security_wait_and_cipher_gate",
+    "sdp_database_and_elements", "sdp_uuid_search_and_network_order",
+    "sdp_attributes_golden_and_nil_omission", "sdp_request_validation",
+    "sdp_search_continuation_and_limits", "sdp_attribute_continuation_exact_allocations",
+    "sdp_continuation_binding_and_database", "sdp_combined_lists_and_empty_match",
+    "sdp_generated_inputs_and_output_bounds",
+    "sdp_runtime_fragmentation_and_lazy_reply", "sdp_runtime_oom_backpressure_and_disconnect",
 ]
 
 

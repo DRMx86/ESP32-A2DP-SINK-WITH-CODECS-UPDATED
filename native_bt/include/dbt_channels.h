@@ -10,7 +10,7 @@
 #define DBT_SIGNAL_RX_SLOTS 4u
 
 typedef enum { DBT_CH_FREE, DBT_CH_CONNECTING, DBT_CH_CONFIGURING,
-               DBT_CH_OPEN, DBT_CH_DISCONNECTING } dbt_channel_state_t;
+               DBT_CH_OPEN, DBT_CH_DISCONNECTING, DBT_CH_SECURING } dbt_channel_state_t;
 typedef enum { DBT_SECURITY_NONE, DBT_SECURITY_ENCRYPTED,
                DBT_SECURITY_AUTHENTICATED } dbt_security_t;
 typedef enum { DBT_CH_EVENT_OPEN, DBT_CH_EVENT_CLOSED, DBT_CH_EVENT_FAILED,
@@ -34,6 +34,7 @@ typedef struct {
     uint8_t cached_request_size, cached_reply_size;
     bool request_sent, pending_extended, connection_ready, local_configured, peer_configured;
     bool incoming_more, incoming_failed, response_more, response_failed, reconfiguring, opened_once;
+    bool security_incoming, security_pending_sent;
     uint8_t cached_request[DBT_SIGNAL_BYTES], cached_reply[DBT_SIGNAL_BYTES];
 } dbt_channel_t;
 
@@ -42,6 +43,12 @@ typedef struct {
     /* Required for authenticated policy; encryption alone is not authentication.
      * Optional for NONE/ENCRYPTED. False refuses a channel before allocation. */
     bool (*authorize)(void *context, const dbt_link_t *link, uint16_t psm, dbt_security_t security);
+    /* Optional async provider. start=true requests work once; false only reads
+     * status. BUSY means pending, OK means ready, anything else refuses. The
+     * authorize callback and actual encryption are checked before success.
+     * Wake the owner when provider status changes outside runtime_poll. */
+    dbt_result_t (*security_request)(void *context, const dbt_link_t *link, uint16_t psm,
+                                     dbt_security_t security, bool start);
     /* A reconfiguration may start only after the current outgoing SDU is done.
      * The application must provide this if it transmits channel data. */
     bool (*tx_idle)(void *context, uint16_t handle, uint16_t local_cid);

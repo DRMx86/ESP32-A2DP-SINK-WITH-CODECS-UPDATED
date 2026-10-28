@@ -61,7 +61,8 @@ acknowledgement if durable completion must be reported.
 
 ## Verified scope
 
-The native suite has 65 groups. ATT checks include 10,240 generated opcode/length
+The current native suite has 94 groups, including Classic security and SDP. ATT
+checks include 10,240 generated opcode/length
 cases with allocation reclamation, security, per-client CCCDs, prepare limits/OOM,
 deferred completion, timeouts, and paired runtime fragmented reads/disconnects.
 Linux normal and ASan/UBSan runs pass.

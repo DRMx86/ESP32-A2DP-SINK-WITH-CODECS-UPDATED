@@ -38,10 +38,21 @@ static bool tx_idle(void *context, uint16_t handle, uint16_t local_cid) {
     dbt_channel_hooks_t *hooks = &runtime->hooks.channels;
     return !hooks->tx_idle || hooks->tx_idle(hooks->context, handle, local_cid);
 }
+static dbt_result_t request_security(void *context,const dbt_link_t *link,uint16_t psm,dbt_security_t security,bool start) {
+    dbt_runtime_t *runtime=context;dbt_channel_hooks_t *hooks=&runtime->hooks.channels;
+    return hooks->security_request?hooks->security_request(hooks->context,link,psm,security,start):DBT_UNSUPPORTED;
+}
 static void event(void *context, dbt_channel_event_t kind, const dbt_channel_t *channel,
                    dbt_channel_reason_t reason, uint16_t result) {
     dbt_runtime_t *runtime = context;
     dbt_channel_hooks_t *hooks = &runtime->hooks.channels;
+    if(kind == DBT_CH_EVENT_CLOSED || kind == DBT_CH_EVENT_FAILED) {
+        for(unsigned i=0;i<DBT_MAX_LINKS;++i) {
+            dbt_runtime_tx_t *tx=&runtime->tx[i];
+            if(tx->active && tx->pdu.handle==channel->handle && tx->pdu.generation==channel->link_generation &&
+                tx->local_cid==channel->local_cid) finish_tx(tx,DBT_TX_ABORTED);
+        }
+    }
     if (hooks->event) hooks->event(hooks->context, kind, channel, reason, result);
 }
 static void data(void *context, const dbt_channel_t *channel, const uint8_t *bytes, uint16_t size) {
@@ -65,6 +76,7 @@ static bool initialize_layers(dbt_runtime_t *runtime) {
     if (runtime->host.state != DBT_HOST_IDENTIFIED) return false;
     dbt_channel_hooks_t hooks = {0};
     hooks.context = runtime; hooks.authorize = authorize; hooks.tx_idle = tx_idle;
+    hooks.security_request=request_security;
     hooks.event = event; hooks.data = data; hooks.fixed_data = fixed; hooks.le_parameters = parameters;
     if (dbt_acl_init(&runtime->acl, &runtime->host.controller) != DBT_OK ||
         dbt_channels_init(&runtime->channels, &runtime->acl, hooks, runtime->maximum_mtu, 1000, 60000) != DBT_OK) {

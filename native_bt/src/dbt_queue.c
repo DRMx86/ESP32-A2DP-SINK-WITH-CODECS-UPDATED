@@ -18,8 +18,8 @@ void dbt_queue_init(dbt_queue_t *queue) {
     atomic_init(&queue->high_water, 0);
 }
 
-dbt_result_t dbt_queue_push(dbt_queue_t *queue, const uint8_t *data,
-                            uint16_t size, bool reserve_control) {
+static dbt_result_t push(dbt_queue_t *queue, const uint8_t *data,
+                         uint16_t size, bool reserve_control, bool sensitive) {
     if (data == 0 || size == 0 || size > DBT_MAX_H4_BYTES) return DBT_INVALID;
     uint32_t written = atomic_load_explicit(&queue->written, memory_order_relaxed);
     uint32_t read = atomic_load_explicit(&queue->read, memory_order_acquire);
@@ -31,7 +31,7 @@ dbt_result_t dbt_queue_push(dbt_queue_t *queue, const uint8_t *data,
         return DBT_NO_SPACE;
     }
     queue->bytes[slot(written)] = (uint8_t)size;
-    queue->bytes[slot(written + 1u)] = (uint8_t)(size >> 8);
+    queue->bytes[slot(written + 1u)] = (uint8_t)((size >> 8) | (sensitive ? 0x80u : 0u));
     for (uint32_t i = 0; i < size; ++i) {
         queue->bytes[slot(written + 2u + i)] = data[i];
     }
@@ -44,6 +44,15 @@ dbt_result_t dbt_queue_push(dbt_queue_t *queue, const uint8_t *data,
     return DBT_OK;
 }
 
+dbt_result_t dbt_queue_push(dbt_queue_t *queue, const uint8_t *data,
+                            uint16_t size, bool reserve_control) {
+    return push(queue,data,size,reserve_control,false);
+}
+dbt_result_t dbt_queue_push_sensitive(dbt_queue_t *queue, const uint8_t *data,
+                                      uint16_t size, bool reserve_control) {
+    return push(queue,data,size,reserve_control,true);
+}
+
 dbt_result_t dbt_queue_pop(dbt_queue_t *queue, uint8_t *data,
                            uint16_t capacity, uint16_t *size) {
     if (data == 0 || size == 0) return DBT_INVALID;
@@ -54,6 +63,8 @@ dbt_result_t dbt_queue_pop(dbt_queue_t *queue, uint8_t *data,
     if (used < 2u || used > DBT_QUEUE_BYTES) return DBT_INVALID;
     uint16_t length = (uint16_t)(queue->bytes[slot(read)] |
                                 ((uint16_t)queue->bytes[slot(read + 1u)] << 8));
+    bool sensitive = (length & 0x8000u) != 0;
+    length &= 0x7fffu;
     if (length == 0 || length > DBT_MAX_H4_BYTES || (uint32_t)length + 2u > used) {
         return DBT_INVALID;
     }
@@ -61,6 +72,10 @@ dbt_result_t dbt_queue_pop(dbt_queue_t *queue, uint8_t *data,
     if (length > capacity) return DBT_NO_SPACE;
     for (uint32_t i = 0; i < length; ++i) {
         data[i] = queue->bytes[slot(read + 2u + i)];
+    }
+    if(sensitive) {
+        volatile uint8_t *bytes = queue->bytes;
+        for(uint32_t i=0;i<length;++i)bytes[slot(read+2u+i)]=0;
     }
     atomic_store_explicit(&queue->read, read + (uint32_t)length + 2u, memory_order_release);
     return DBT_OK;

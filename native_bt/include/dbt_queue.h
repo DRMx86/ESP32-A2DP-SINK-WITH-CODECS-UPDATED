@@ -31,6 +31,11 @@ typedef struct {
 void dbt_queue_init(dbt_queue_t *queue);
 dbt_result_t dbt_queue_push(dbt_queue_t *queue, const uint8_t *data,
                             uint16_t size, bool reserve_control);
+/* Clears consumed payload before publishing the read position. Normal media
+ * records keep the original copy cost. The consumer output remains borrowed
+ * storage owned by its caller, which must clear its own sensitive copies. */
+dbt_result_t dbt_queue_push_sensitive(dbt_queue_t *queue, const uint8_t *data,
+                                      uint16_t size, bool reserve_control);
 dbt_result_t dbt_queue_pop(dbt_queue_t *queue, uint8_t *data,
                            uint16_t capacity, uint16_t *size);
 /* Call only from the consumer; it is a snapshot, not a reservation. */

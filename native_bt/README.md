@@ -4,8 +4,9 @@ The project goal is a small, independently authored Bluetooth Classic + BLE host
 with simultaneous operation through the original ESP32's Espressif dual-mode
 controller. BTstack is inspected only in `../reference/btstack`.
 
-Current milestone: a portable C11 HCI/ACL/L2CAP channel runtime, basic GAP setup and an isolated
-ESP-IDF 5.5.2 probe. This is **not yet a complete Bluetooth host or a product audio
+Current milestone: a portable C11 HCI/ACL/Basic L2CAP runtime, GAP setup, LE ATT/GATT,
+Classic security and an SDP server, with an isolated ESP-IDF 5.5.2 probe.
+This is **not yet a complete Bluetooth host or a product audio
 firmware replacement**. The staged audio application still uses Bluedroid and
 includes the separately requested integer DSP and codec-memory changes.
 
@@ -52,7 +53,7 @@ Classic credits while LE data/control continue. `dbt_gap` has explicit incoming
 admission and security-owner hooks; no bonding/security/profile implementation is
 implied by enabling SSP in the controller.
 
-There are 65 native groups, including the concurrent queue test. Run
+There are 94 native groups, including the concurrent queue test. Run
 `python native_bt/tools/test_stack_linux.py --host HOST --user USER` for Linux
 normal/ASan/UBSan checks; the password prompt is session-only. The default probe
 does not require the separate LHDC checkout. `build_probe.ps1 -WithLhdc` enables
@@ -63,6 +64,13 @@ Live Linux testing passed discovery, 200 writes with periodic readbacks, payload
 through 512 bytes, a 512-byte reliable write, and 208 notifications. The measured
 BLE timings are in [ATT/GATT evidence](docs/ATT_GATT.md); no audio, bonding or
 simultaneous Classic/BLE pass is implied. Product control/OTA binding is pending.
+
+`build_probe.ps1 -WithGatt -WithClassicSecurity -TestPeer AA:BB:CC:DD:EE:FF`
+explicitly enables restricted diagnostic Classic pairing, asynchronous NVS bonds,
+encrypted Basic echo and public SDP discovery. Select the actual test adapter;
+the example address is a placeholder. Just Works pairing/encryption and live
+[SDP discovery](docs/SDP.md) passed. Simultaneous Classic/LE traffic still fails;
+these diagnostic services contain no audio profiles.
 
 See [release gates](docs/RELEASE_READINESS.md) before publishing a replacement
 firmware. This milestone remains an incomplete development implementation.

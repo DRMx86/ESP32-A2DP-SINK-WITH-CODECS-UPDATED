@@ -12,6 +12,11 @@ static unsigned opened, closed, failed, reconfigured, data_calls, fixed_calls, p
 static dbt_channel_reason_t last_reason;
 static uint16_t last_result, data_size, data_cid;
 static bool permit, idle, parameters;
+static dbt_result_t security_progress;
+static unsigned security_starts;
+static dbt_result_t security_request(void *context,const dbt_link_t *link,uint16_t psm,dbt_security_t level,bool start){
+    (void)context;(void)link;(void)psm;(void)level;if(start)++security_starts;return security_progress;
+}
 static uint8_t wire[48], command[256], received_data[16];
 static uint16_t wire_size;
 static uint8_t wire_id;
@@ -350,4 +355,52 @@ EXPORT int test_channels_timer_wrap_and_late_pending_bound(void) {
     CHECK(rx(1,1,3,id,waiting,8)==DBT_OK);dbt_channels_poll(&manager,300001,32);
     CHECK(failed==1 && dbt_channels_find(&manager,1,local)==0);
     return 0;
+}
+
+EXPORT int test_channels_incoming_waits_for_verified_security(void){
+    fixture();manager.hooks.security_request=security_request;security_progress=DBT_BUSY;security_starts=0;
+    dbt_service_t service={0x19,256,48,DBT_SECURITY_ENCRYPTED};CHECK(dbt_channels_register(&manager,service)==DBT_OK);
+    uint8_t request[]={0x19,0,0x80,0};CHECK(rx(1,1,2,22,request,4)==DBT_OK);poll();
+    const dbt_channel_t *channel=dbt_channels_find(&manager,1,0x40);CHECK(channel && channel->state==DBT_CH_SECURING && security_starts==1);
+    uint32_t deadline=channel->deadline;
+    int result=take(3);if(result)return result;CHECK(r16(wire+8)==1 && r16(wire+10)==1);
+    acl.links[0].encrypted=true;security_progress=DBT_OK;poll();
+    CHECK(channel->state==DBT_CH_SECURING && manager.tx_count==1 && !channel->connection_ready);
+    result=commit();if(result)return result;poll();result=take(3);if(result)return result;
+    CHECK(r16(wire+8)==0 && channel->state==DBT_CH_CONFIGURING && !channel->connection_ready);
+    result=commit();if(result)return result;CHECK(channel->connection_ready);
+    result=take(4);if(result)return result;uint8_t config_id=wire_id;result=commit();if(result)return result;
+    uint8_t own_response[6]={0x40,0,0,0,0,0};CHECK(rx(1,1,5,config_id,own_response,6)==DBT_OK);
+    uint8_t peer_request[8]={0x40,0,0,0,1,2,0,1};CHECK(rx(1,1,4,23,peer_request,8)==DBT_OK);poll();
+    result=take(5);if(result)return result;result=commit();if(result)return result;
+    CHECK(opened==1 && channel->state==DBT_CH_OPEN && deadline>1000);
+    permit=false;uint8_t payload[]={1,2};dbt_l2cap_tx_t tx;
+    CHECK(dbt_channels_receive(&manager,1,channel->link_generation,0x40,payload,2)==DBT_UNSUPPORTED);
+    CHECK(dbt_channels_prepare_data(&manager,1,0x40,payload,2,&tx)==DBT_BUSY && data_calls==0);return 0;
+}
+EXPORT int test_channels_security_duplicates_failure_and_timeout(void){
+    fixture();manager.hooks.security_request=security_request;security_progress=DBT_BUSY;security_starts=0;
+    dbt_service_t service={0x19,256,48,DBT_SECURITY_ENCRYPTED};CHECK(dbt_channels_register(&manager,service)==DBT_OK);
+    uint8_t request[]={0x19,0,0x80,0};CHECK(rx(1,1,2,22,request,4)==DBT_OK);poll();
+    uint32_t deadline=dbt_channels_find(&manager,1,0x40)->deadline;
+    int result=take(3);if(result)return result;result=commit();if(result)return result;
+    CHECK(rx(1,1,2,22,request,4)==DBT_OK);poll();result=take(3);if(result)return result;
+    CHECK(r16(wire+8)==1 && security_starts==1 && dbt_channels_find(&manager,1,0x40)->deadline==deadline);
+    result=commit();if(result)return result;security_progress=DBT_INVALID;poll();
+    result=take(3);if(result)return result;CHECK(r16(wire+8)==3 && failed==1 && last_reason==DBT_CH_REASON_SECURITY);
+    result=commit();if(result)return result;
+    fixture();manager.hooks.security_request=security_request;security_progress=DBT_BUSY;
+    CHECK(dbt_channels_register(&manager,service)==DBT_OK);CHECK(rx(1,1,2,22,request,4)==DBT_OK);poll();
+    deadline=dbt_channels_find(&manager,1,0x40)->deadline;result=take(3);if(result)return result;result=commit();if(result)return result;
+    dbt_channels_poll(&manager,deadline,32);result=take(3);if(result)return result;
+    CHECK(r16(wire+8)==3 && failed==1 && last_reason==DBT_CH_REASON_LOCAL_TIMEOUT);return 0;
+}
+EXPORT int test_channels_outgoing_security_wait_and_cipher_gate(void){
+    fixture();manager.hooks.security_request=security_request;security_progress=DBT_BUSY;security_starts=0;uint16_t cid=0;
+    CHECK(dbt_channels_open(&manager,1,0x19,256,48,DBT_SECURITY_ENCRYPTED,++now,&cid)==DBT_OK);
+    dbt_signal_view_t view;CHECK(dbt_channels_tx_peek(&manager,&view)==DBT_EMPTY);
+    CHECK(dbt_channels_find(&manager,1,cid)->state==DBT_CH_SECURING && security_starts==1);
+    security_progress=DBT_OK;poll();CHECK(dbt_channels_tx_peek(&manager,&view)==DBT_EMPTY);
+    acl.links[0].encrypted=true;poll();int result=take(2);if(result)return result;
+    CHECK(r16(wire+4)==0x19 && r16(wire+6)==cid && dbt_channels_find(&manager,1,cid)->state==DBT_CH_CONNECTING);return 0;
 }

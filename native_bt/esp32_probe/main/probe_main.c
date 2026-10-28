@@ -4,6 +4,11 @@
 #ifdef DBT_PROBE_GATT_TEST
 #include "probe_gatt.h"
 #endif
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+#include "probe_security.h"
+#include "probe_echo.h"
+#include "probe_sdp.h"
+#endif
 #include "esp_bt.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -52,6 +57,9 @@ static bool transport_ready(void *context) {
 static bool transport_send(void *context, uint8_t *data, uint16_t size) {
     (void)context;
     if (!esp_vhci_host_check_send_available()) return false;
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+    probe_echo_transmit(data,size);
+#endif
     /* Host task only, outside critical sections and scheduler suspension. */
     esp_vhci_host_send_packet(data, size);
     return true;
@@ -65,13 +73,49 @@ static void release_rx(void *context, uint8_t *data) {
     (void)context;
     heap_caps_free(data);
 }
+#if defined(DBT_PROBE_GATT_TEST) || defined(DBT_PROBE_CLASSIC_SECURITY_TEST)
+static void profile_link(void *context,const dbt_link_change_t *change) {
+    (void)context;
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+    probe_security_link(change);
+#endif
+#ifdef DBT_PROBE_GATT_TEST
+    probe_gatt_link(context,change);
+#endif
+}
+#endif
 static void observe(void *context, const dbt_hci_packet_t *packet) {
     (void)context;
     if (packet->type != DBT_H4_EVENT || gap.state == DBT_GAP_IDLE) return;
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+    dbt_result_t owned=probe_security_receive(packet,now_ms());
+    if(owned!=DBT_UNSUPPORTED) {
+        if(owned!=DBT_OK)dbt_host_abort(&runtime.host,owned==DBT_NO_SPACE?DBT_FAULT_RX_OVERRUN:DBT_FAULT_BAD_PACKET);
+        return;
+    }
+#endif
     dbt_result_t result = dbt_gap_event(&gap, packet);
     if (result == DBT_INVALID || result == DBT_NO_SPACE)
         dbt_host_abort(&runtime.host, result == DBT_NO_SPACE ? DBT_FAULT_RX_OVERRUN : DBT_FAULT_BAD_PACKET);
 }
+
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+static void profile_channel(void *context, dbt_channel_event_t event, const dbt_channel_t *channel,
+                            dbt_channel_reason_t reason, uint16_t result) {
+    probe_echo_event(context, event, channel, reason, result);
+    probe_sdp_event(event, channel);
+}
+static void profile_data(void *context, const dbt_channel_t *channel, const uint8_t *data, uint16_t size) {
+    if (channel->psm != 1) { probe_echo_data(context, channel, data, size); return; }
+    if (probe_sdp_receive(channel, data, size) != DBT_OK) {
+        /* Invalid/pipelined SDP is terminated explicitly, never silently lost. */
+        if (dbt_channels_close(&runtime.channels, channel->handle, channel->local_cid, runtime.now_ms) != DBT_OK) {
+            const dbt_link_t *link = dbt_acl_find(&runtime.acl, channel->handle);
+            if (link) (void)dbt_gap_disconnect(&gap, link, 0x13);
+        }
+    }
+}
+#endif
 
 void app_main(void) {
     owner = xTaskGetCurrentTaskHandle();
@@ -80,8 +124,16 @@ void app_main(void) {
     dbt_runtime_hooks_t hooks = {0};
     hooks.allocate = allocate_rx; hooks.release = release_rx; hooks.packet = observe;
 #ifdef DBT_PROBE_GATT_TEST
-    hooks.link = probe_gatt_link;
     hooks.channels.fixed_data = probe_gatt_receive;
+#endif
+#if defined(DBT_PROBE_GATT_TEST) || defined(DBT_PROBE_CLASSIC_SECURITY_TEST)
+    hooks.link = profile_link;
+#endif
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+    hooks.channels.authorize=probe_security_authorize;
+    hooks.channels.security_request=probe_security_request;
+    hooks.channels.event=profile_channel;
+    hooks.channels.data=profile_data;
 #endif
     if (dbt_runtime_init(&runtime, transport, hooks, 4096, 2000) != DBT_OK) {
         ESP_LOGE(tag, "core initialization failed");
@@ -91,6 +143,9 @@ void app_main(void) {
         .advertising = {2, 1, 2}, .advertising_size = 3,
         .advertising_minimum = 0x80, .advertising_maximum = 0x100 };
     dbt_gap_hooks_t gap_hooks = {0};
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+    gap_hooks.accept_classic=probe_security_accept;
+#endif
 #ifdef DBT_PROBE_GATT_TEST
     probe_gatt_advertisement(&gap_config);
 #endif
@@ -100,6 +155,11 @@ void app_main(void) {
     }
     /* Existing NVS is preserved. Initialization failure does not erase bonds/settings. */
     ESP_ERROR_CHECK(nvs_flash_init());
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+    if(probe_security_init(&runtime,&gap,owner)!=DBT_OK) {
+        ESP_LOGE(tag,"Classic security/storage initialization failed without erasing NVS");return;
+    }
+#endif
     esp_bt_controller_config_t configuration = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_bt_controller_init(&configuration));
     static const esp_vhci_host_callback_t callbacks = { send_available, receive_packet };
@@ -112,12 +172,30 @@ void app_main(void) {
     dbt_host_t *host = &runtime.host;
     dbt_host_state_t previous = DBT_HOST_IDLE;
     dbt_gap_state_t previous_gap = DBT_GAP_IDLE;
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+    bool security_reported=false,echo_initialized=false;
+#endif
 #ifdef DBT_PROBE_GATT_TEST
     bool gatt_initialized = false, gatt_reported = false;
 #endif
     for (;;) {
         uint32_t now = now_ms();
         dbt_runtime_poll(&runtime, now, 8, 8);
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+        if(runtime.ready && !echo_initialized) {
+            if(probe_echo_init(&runtime,&gap)!=DBT_OK || probe_sdp_init(&runtime)!=DBT_OK)
+                dbt_runtime_abort(&runtime,DBT_FAULT_BAD_RESPONSE);
+            else {
+                echo_initialized=true;
+                printf("{\"probe\":\"sdp_ready\",\"records\":2,\"metadata_bytes\":%u,\"audio_ready\":false}\n",probe_sdp_bytes());
+            }
+        }
+        probe_security_poll(now);
+        if(echo_initialized) {
+            probe_echo_poll();
+            if(probe_sdp_poll()!=DBT_OK)dbt_runtime_abort(&runtime,DBT_FAULT_BAD_RESPONSE);
+        }
+#endif
 #ifdef DBT_PROBE_GATT_TEST
         if (runtime.ready && !gatt_initialized) {
             if (probe_gatt_init(&runtime, &gap) != DBT_OK) {
@@ -128,6 +206,17 @@ void app_main(void) {
 #endif
         if (runtime.ready && gap.state == DBT_GAP_IDLE) (void)dbt_gap_start(&gap);
         dbt_gap_poll(&gap, now);
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+        if(gap.state==DBT_GAP_READY && !gap.classic_pending && gap.classic_scan!=3)
+            (void)dbt_gap_set_classic_scan(&gap,true,true);
+        if(gap.classic_scan==3 && !security_reported) {
+            security_reported=true;
+            printf("{\"probe\":\"classic_security_probe_ready\",\"configured\":true,"
+                   "\"metadata_bytes\":%u,\"loaded_bonds\":%u,\"worker_stack_bytes\":3072,"
+                   "\"logger_stack_bytes\":2048,\"audio_ready\":false}\n",
+                   probe_security_bytes(),probe_security_loaded_bonds());
+        }
+#endif
 #ifdef DBT_PROBE_GATT_TEST
         if (gatt_initialized && gap.state == DBT_GAP_READY && !gap.advertising &&
             !gap.advertising_pending && !probe_gatt_connected())
@@ -172,6 +261,14 @@ void app_main(void) {
 #ifdef DBT_PROBE_GATT_TEST
         uint32_t att_wait = probe_gatt_wait_ms(now_ms());
         if (att_wait < wait) wait = att_wait;
+#endif
+#ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
+        uint32_t security_wait=probe_security_wait_ms(now_ms());
+        if(security_wait<wait)wait=security_wait;
+        uint32_t echo_wait=probe_echo_wait_ms();
+        if(echo_wait<wait)wait=echo_wait;
+        uint32_t sdp_wait=probe_sdp_wait_ms();
+        if(sdp_wait<wait)wait=sdp_wait;
 #endif
         if (wait == 0) continue;
         TickType_t ticks = portMAX_DELAY;

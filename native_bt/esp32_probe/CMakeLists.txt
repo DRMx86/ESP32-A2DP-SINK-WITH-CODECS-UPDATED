@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 option(DBT_PROBE_LHDC_BUILD "Also compile the separate user-owned LHDC decoder component" OFF)
 option(DBT_PROBE_GATT_TEST "Enable the diagnostic unbonded LE echo/counter service" OFF)
+option(DBT_PROBE_CLASSIC_SECURITY_TEST "Enable peer-restricted Classic pairing/bond diagnostics" OFF)
+set(DBT_PROBE_PAIRING_PEER_BYTES "0,0,0,0,0,0" CACHE STRING "Explicit test peer BD_ADDR in HCI byte order")
 if(NOT DEFINED ENV{IDF_PATH})
     get_filename_component(local_idf "${CMAKE_CURRENT_LIST_DIR}/../../esp-idf" ABSOLUTE)
     set(ENV{IDF_PATH} "${local_idf}")

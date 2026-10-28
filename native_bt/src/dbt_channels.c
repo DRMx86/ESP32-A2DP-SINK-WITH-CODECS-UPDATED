@@ -1,6 +1,6 @@
 #include "dbt_channels.h"
 
-enum { TX_PLAIN, TX_REQUEST, TX_CONNECTION_ACCEPT, TX_CONFIG_ACCEPT };
+enum { TX_PLAIN, TX_REQUEST, TX_CONNECTION_ACCEPT, TX_CONFIG_ACCEPT, TX_SECURITY_PENDING };
 enum { CONNECTION_REQUEST = 2, CONNECTION_RESPONSE = 3, CONFIG_REQUEST = 4,
        CONFIG_RESPONSE = 5, DISCONNECT_REQUEST = 6, DISCONNECT_RESPONSE = 7 };
 
@@ -129,6 +129,12 @@ static bool authorized(dbt_channels_t *manager, const dbt_link_t *link, uint16_t
     manager->in_callback = false;
     return allowed;
 }
+static dbt_result_t security_request(dbt_channels_t *manager,const dbt_link_t *link,uint16_t psm,dbt_security_t security,bool start) {
+    if(!manager->hooks.security_request)return DBT_UNSUPPORTED;
+    manager->in_callback=true;
+    dbt_result_t result=manager->hooks.security_request(manager->hooks.context,link,psm,security,start);
+    manager->in_callback=false;return result;
+}
 static dbt_channel_t *allocate_channel(dbt_channels_t *manager, const dbt_link_t *link, uint16_t psm,
                                        uint16_t mtu, uint16_t minimum, dbt_security_t security) {
     if (manager->serial == UINT32_MAX) return 0;
@@ -231,12 +237,18 @@ dbt_result_t dbt_channels_open(dbt_channels_t *manager, uint16_t handle, uint16_
         mtu < minimum || mtu > manager->maximum_mtu || security > DBT_SECURITY_AUTHENTICATED) return DBT_INVALID;
     const dbt_link_t *link = dbt_acl_find(manager->acl, handle);
     if (!link || link->kind != DBT_LINK_CLASSIC) return DBT_UNSUPPORTED;
-    if (!authorized(manager, link, psm, security)) return DBT_UNSUPPORTED;
+    bool allowed=authorized(manager,link,psm,security);
     prune_tx(manager);
     if (manager->tx_count == DBT_SIGNAL_TX_SLOTS) return DBT_BUSY;
     dbt_channel_t *channel = allocate_channel(manager, link, psm, mtu, minimum, security);
     if (!channel) return DBT_NO_SPACE;
     manager->now_ms = now;
+    if(!allowed) {
+        dbt_result_t progress=security_request(manager,link,psm,security,true);
+        if(progress!=DBT_OK && progress!=DBT_BUSY){zero(channel,sizeof(*channel));return DBT_UNSUPPORTED;}
+        channel->state=DBT_CH_SECURING;channel->deadline=now+manager->ertx_ms;
+        *local_cid=channel->local_cid;return DBT_OK;
+    }
     dbt_result_t result = queue_request(manager, channel, CONNECTION_REQUEST, false);
     if (result != DBT_OK) { zero(channel, sizeof(*channel)); return result; }
     *local_cid = channel->local_cid;
@@ -284,7 +296,7 @@ dbt_result_t dbt_channels_receive(dbt_channels_t *manager, uint16_t handle, uint
         if (cid >= 0x0040) {
             dbt_channel_t *channel = find(manager, handle, cid);
             if (!channel || channel->link_generation != generation || channel->state != DBT_CH_OPEN || size > channel->rx_mtu) return DBT_INVALID;
-            if (channel->security >= DBT_SECURITY_ENCRYPTED && !link->encrypted) return DBT_UNSUPPORTED;
+            if (!authorized(manager,link,channel->psm,channel->security)) return DBT_UNSUPPORTED;
             if (manager->hooks.data) {
                 manager->in_callback = true;
                 manager->hooks.data(manager->hooks.context, channel, data, size);
@@ -334,19 +346,25 @@ static dbt_result_t connection_request(dbt_channels_t *manager, const dbt_link_t
         if (!service || !psm_valid(psm)) result = 2;
         else if (peer < 0x0040) result = 6;
         else if (existing) result = 7;
-        else if (!authorized(manager, link, psm, service->security)) result = 3;
         else {
             channel = allocate_channel(manager, link, psm, service->rx_mtu, service->minimum_mtu, service->security);
             if (!channel) result = 4;
-            else { channel->remote_cid = peer; channel->incoming_connect_id = command[1]; channel->state = DBT_CH_CONFIGURING; }
+            else { channel->remote_cid = peer; channel->incoming_connect_id = command[1]; channel->state = DBT_CH_CONFIGURING;
+                if(!authorized(manager,link,psm,service->security)) {
+                    dbt_result_t progress=security_request(manager,link,psm,service->security,true);
+                    if(progress==DBT_BUSY || progress==DBT_OK){channel->state=DBT_CH_SECURING;channel->security_incoming=true;channel->deadline=manager->now_ms+manager->ertx_ms;}
+                    else{zero(channel,sizeof(*channel));channel=0;result=3;}
+                }
+            }
         }
     }
     uint8_t response[8];
     put16(response, channel ? channel->local_cid : 0); put16(response + 2, peer);
-    put16(response + 4, result); put16(response + 6, 0);
+    bool securing=channel && channel->state==DBT_CH_SECURING;
+    put16(response + 4, securing?1:result); put16(response + 6, securing?1:0);
     dbt_result_t queued = enqueue(manager, link, 1, CONNECTION_RESPONSE, command[1], response, 8,
-                                  channel, channel ? TX_CONNECTION_ACCEPT : TX_PLAIN, 0);
-    if (channel && !channel->connection_ready) channel->deadline = manager->now_ms + manager->rtx_ms;
+                                  channel, securing?TX_SECURITY_PENDING:channel ? TX_CONNECTION_ACCEPT : TX_PLAIN, 0);
+    if (channel && !channel->connection_ready && !securing) channel->deadline = manager->now_ms + manager->rtx_ms;
     return queued;
 }
 static void pending(dbt_channels_t *manager, dbt_channel_t *channel) {
@@ -621,6 +639,26 @@ uint16_t dbt_channels_poll(dbt_channels_t *manager, uint32_t now, uint16_t budge
         if (channel->state == DBT_CH_FREE) continue;
         const dbt_link_t *link = dbt_acl_find(manager->acl, channel->handle);
         if (!link || link->generation != channel->link_generation) { finish(manager, channel, DBT_CH_REASON_LINK_LOST, 0); continue; }
+        if(channel->state==DBT_CH_SECURING) {
+            bool allowed=authorized(manager,link,channel->psm,channel->security);
+            dbt_result_t progress=allowed?DBT_OK:security_request(manager,link,channel->psm,channel->security,false);
+            bool expired=due(now,channel->deadline);
+            bool denied=!allowed && progress!=DBT_BUSY && progress!=DBT_OK;
+            if(expired || denied) {
+                if(channel->security_incoming) {
+                    uint8_t body[8];put16(body,0);put16(body+2,channel->remote_cid);put16(body+4,3);put16(body+6,0);
+                    if(enqueue(manager,link,1,CONNECTION_RESPONSE,channel->incoming_connect_id,body,8,0,TX_PLAIN,0)!=DBT_OK)continue;
+                }
+                finish(manager,channel,expired?DBT_CH_REASON_LOCAL_TIMEOUT:DBT_CH_REASON_SECURITY,3);
+            } else if(allowed && (!channel->security_incoming || channel->security_pending_sent)) {
+                if(channel->security_incoming) {
+                    uint8_t body[8];put16(body,channel->local_cid);put16(body+2,channel->remote_cid);put16(body+4,0);put16(body+6,0);
+                    if(enqueue(manager,link,1,CONNECTION_RESPONSE,channel->incoming_connect_id,body,8,channel,TX_CONNECTION_ACCEPT,0)!=DBT_OK)continue;
+                    channel->state=DBT_CH_CONFIGURING;channel->deadline=now+manager->rtx_ms;
+                } else if(queue_request(manager,channel,CONNECTION_REQUEST,false)==DBT_OK)channel->state=DBT_CH_CONNECTING;
+            }
+            continue;
+        }
         if (channel->security >= DBT_SECURITY_ENCRYPTED && !link->encrypted) { finish(manager, channel, DBT_CH_REASON_SECURITY, 0); continue; }
         if (channel->state == DBT_CH_CONFIGURING && channel->connection_ready && due(now, channel->config_limit)) {
             finish(manager, channel, DBT_CH_REASON_RESPONSE_TIMEOUT, 0); continue;
@@ -682,7 +720,9 @@ dbt_result_t dbt_channels_tx_commit(dbt_channels_t *manager, uint32_t now) {
     if (!tx_valid(manager, &snapshot)) return DBT_OK;
     dbt_channel_t *channel = snapshot.serial ? find(manager, snapshot.handle, snapshot.local_cid) : 0;
     if (!channel) return DBT_OK;
-    if (snapshot.effect == TX_REQUEST && channel->request_id == snapshot.bytes[1] && channel->request_code == snapshot.bytes[0]) {
+    if(snapshot.effect==TX_SECURITY_PENDING && channel->state==DBT_CH_SECURING) {
+        channel->security_pending_sent=true;
+    } else if (snapshot.effect == TX_REQUEST && channel->request_id == snapshot.bytes[1] && channel->request_code == snapshot.bytes[0]) {
         channel->request_sent = true; channel->deadline = now + manager->rtx_ms;
     } else if (snapshot.effect == TX_CONNECTION_ACCEPT && !channel->connection_ready) {
         channel->connection_ready = true; channel->deadline = now + manager->rtx_ms;
@@ -719,6 +759,7 @@ dbt_result_t dbt_channels_prepare_data(dbt_channels_t *manager, uint16_t handle,
     dbt_channel_t *channel = find(manager, handle, cid);
     const dbt_link_t *link = dbt_acl_find(manager->acl, handle);
     if (!channel || !link || link->generation != channel->link_generation || channel->state != DBT_CH_OPEN) return DBT_BUSY;
+    if(!authorized(manager,link,channel->psm,channel->security))return DBT_BUSY;
     if (size > channel->tx_mtu) return DBT_NO_SPACE;
     return dbt_l2cap_tx_begin(tx, link, channel->remote_cid, data, size);
 }
@@ -729,6 +770,7 @@ uint32_t dbt_channels_wait_ms(const dbt_channels_t *manager, uint32_t now) {
     for (unsigned i = 0; i < DBT_CHANNEL_LIMIT; ++i) {
         const dbt_channel_t *channel = &manager->channels[i];
         if (channel->state == DBT_CH_FREE || channel->state == DBT_CH_OPEN) continue;
+        if(channel->state==DBT_CH_SECURING && due(now,channel->deadline) && channel->security_incoming && manager->tx_count==DBT_SIGNAL_TX_SLOTS)continue;
         if (due(now, channel->deadline)) return 0;
         uint32_t remaining = channel->deadline - now;
         if (remaining < wait) wait = remaining;
