@@ -35,10 +35,23 @@ jobs:
           path: ~/.espressif
           key: espressif-tools-${{ runner.os }}-${{ hashFiles('esp-idf/tools/tools.json') }}
 
+      # Files committed from Windows lose their exec bit, so restore it.
+      - name: Fix script permissions and line endings
+        run: |
+          cd esp-idf
+          find . -name "*.sh" -type f -exec chmod +x {} +
+          chmod +x install.sh export.sh 2>/dev/null || true
+          chmod +x tools/idf.py tools/idf_tools.py 2>/dev/null || true
+          chmod +x components/espcoredump/espcoredump.py 2>/dev/null || true
+          chmod +x components/partition_table/*.py 2>/dev/null || true
+          chmod +x components/esptool_py/esptool/*.py 2>/dev/null || true
+          # Strip CRLF from shell scripts in case they were committed with Windows endings
+          find . -name "*.sh" -type f -exec sed -i 's/\r$//' {} +
+
       - name: Install ESP-IDF tools for ESP32
         run: |
           cd esp-idf
-          ./install.sh esp32
+          bash ./install.sh esp32
 
       - name: Build main firmware (bt_audio_sink)
         run: |
