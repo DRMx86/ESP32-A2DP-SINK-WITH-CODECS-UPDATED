@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch to build"
+        default: "main"
 
 jobs:
   build:
@@ -15,6 +19,7 @@ jobs:
       - name: Checkout (with submodules, if any)
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
 
       - name: Install system packages
