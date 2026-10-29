@@ -1,28 +1,24 @@
-# ESP-IDF Partition Table,,,,,
-# Name,   Type, SubType, Offset,  Size, Flags
-nvs,      data, nvs,     0x9000,  0x6000,
-phy_init, data, phy,     0xF000,  0x1000,
+# ESP-IDF Partition Table (4MB flash, ESP32-WROOM)
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xF000,   0x1000,
 
 # Recovery partition (Bluedroid BLE OTA-only firmware)
-# This partition is used for recovery mode when button is pressed at boot
-# Uses "ota_2" subtype (0x12) so bootloader can boot into it when requested
-# On fresh flash, OTA data points to ota_0, so this won't be auto-booted
-# Size: 1MB (0x100000) - needed for Bluedroid with A2DP compiled in
-recovery, app,  ota_2,   0x10000, 0x100000,
+# Used for recovery mode when the button is pressed at boot.
+# Uses "ota_2" subtype (0x12) so the bootloader can boot into it when requested.
+# On a fresh flash, OTA data points to ota_0, so this is not auto-booted.
+recovery, app,  ota_2,   0x10000,  0x100000,
 
-# Two-partition OTA scheme (8MB flash):
+# Two-partition OTA scheme (4MB flash), 1.25MB each:
 #   - ota_0: primary app partition
 #   - ota_1: secondary app partition for OTA updates
-# OTA alternates between ota_0 and ota_1.
 # NOTE: app partition offsets must be 0x10000-aligned.
-ota_0,    app,  ota_0,   0x110000, 0x280000,
-ota_1,    app,  ota_1,   0x390000, 0x280000,
+ota_0,    app,  ota_0,   0x110000, 0x140000,
+ota_1,    app,  ota_1,   0x250000, 0x140000,
 
 # OTA data (stores boot partition state for rollback)
-otadata,  data, ota,     0x610000, 0x2000,
+otadata,  data, ota,     0x390000, 0x2000,
 
 # Storage partition for sound effects and other files
-# Location: After otadata (0x612000 to end of 8MB flash = ~1976KB)
-spiffs,   data, spiffs,  0x612000, 0x1EE000,
-
-# Filesystem
+# 0x392000 to end of 4MB flash (0x400000) = 440KB
+spiffs,   data, spiffs,  0x392000, 0x6E000,
