@@ -343,13 +343,23 @@ static dbt_result_t complete_job(unsigned index, bool success) {
     return dbt_classic_security_complete_store(&security, jobs[index].token, success);
 }
 static int fresh_key(uint8_t key_type) {
-    int r = exchange(1, 4);
+    dbt_classic_security_pairable(&security,true);
+    CHECK(dbt_classic_security_require(&security,dbt_acl_find(&acl,1),DBT_SECURITY_ENCRYPTED,++now)==DBT_BUSY);
+    int r=command(0x0411);
+    if(r)return r;
+    r=complete(0,0);
+    if(r)return r;
+    r = exchange(1, 4);
     if (r)
         return r;
     r = notify_key(key_type, 0x20);
     if (r)
         return r;
-    return pairing_complete();
+    r=pairing_complete();
+    if(r)return r;
+    uint8_t authenticated[]={0,1,0};
+    CHECK(receive(6,authenticated,3)==DBT_OK);
+    return 0;
 }
 
 EXPORT int test_classic_key_classification_and_configuration(void) {
@@ -439,12 +449,11 @@ EXPORT int test_classic_ssp_persistence_and_encryption_gates(void) {
     r = pairing_complete();
     if (r)
         return r;
-    r = command(0x0413);
-    if (r)
-        return r;
-    r = complete(0, 0);
-    if (r)
-        return r;
+    /* Incoming SSP belongs to the peer. Pairing alone must not make us issue
+     * a competing Set Connection Encryption command. */
+    unsigned previous_sends=sends;
+    poll();
+    CHECK(sends==previous_sends && !security.peers[0].encryption_requested);
     CHECK(ready_events == 0);
     r = encrypted(1);
     if (r)
@@ -859,5 +868,30 @@ EXPORT int test_classic_command_collision_waits_for_actual_events(void) {
     dbt_host_abort(&host, DBT_FAULT_CONTROLLER);
     CHECK(
         !dbt_classic_security_authorize(&security, dbt_acl_find(&acl, 1), DBT_SECURITY_ENCRYPTED));
+    return 0;
+}
+
+EXPORT int test_classic_ssp_defers_local_security_demand(void) {
+    fixture();
+    int r=exchange(1,4);if(r)return r;
+    CHECK(dbt_classic_security_require(&security,dbt_acl_find(&acl,1),DBT_SECURITY_ENCRYPTED,++now)==DBT_BUSY);
+    unsigned previous_sends=sends;
+    poll();
+    CHECK(sends==previous_sends && security.peers[0].locally_required && !security.peers[0].auth_requested);
+    r=notify_key(4,0x20);if(r)return r;
+    r=pairing_complete();if(r)return r;
+    r=command(0x0411);if(r)return r;
+    r=complete(0,0);if(r)return r;
+    previous_sends=sends;poll();
+    CHECK(sends==previous_sends && !security.peers[0].auth_complete && !security.peers[0].encryption_requested);
+    uint8_t authenticated[]={0,1,0};
+    CHECK(receive(6,authenticated,3)==DBT_OK);
+    r=command(0x0413);if(r)return r;
+    r=complete(0,0);if(r)return r;
+    CHECK(!dbt_classic_security_authorize(&security,dbt_acl_find(&acl,1),DBT_SECURITY_ENCRYPTED));
+    r=encrypted(1);if(r)return r;
+    r=command(0x1408);if(r)return r;
+    r=complete(0,16);if(r)return r;
+    CHECK(!ready_events && complete_job(0,true)==DBT_OK && ready_events==1 && !failed_events);
     return 0;
 }

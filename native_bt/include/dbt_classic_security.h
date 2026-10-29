@@ -84,6 +84,7 @@ typedef struct {
     bool used, connected, accepted_pairing, key_known, bonded, dirty_key, ready, failed;
     bool auth_requested, auth_complete, pairing_complete, encryption_requested, size_requested;
     bool force_pair, deleting, store_expired, io_replied, auto_confirmed;
+    bool locally_required;
 } dbt_classic_peer_t;
 
 typedef struct {

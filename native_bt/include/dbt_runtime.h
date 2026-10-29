@@ -2,6 +2,7 @@
 #define DBT_RUNTIME_H
 
 #include "dbt_channels.h"
+#include "dbt_rx_flow.h"
 
 typedef enum { DBT_TX_ADMITTED, DBT_TX_LINK_LOST, DBT_TX_ABORTED } dbt_tx_outcome_t;
 /* ADMITTED means all fragments copied to HCI transport, never RF delivery. */
@@ -13,6 +14,9 @@ typedef struct {
     dbt_channel_hooks_t channels;
     void (*link)(void *context, const dbt_link_change_t *change);
     dbt_observer_t packet;
+    /* Borrowed SCO frame/status, owner only. The application must validate its
+     * synchronous handle and copy data for a voice worker before returning. */
+    dbt_observer_t sco;
 } dbt_runtime_hooks_t;
 
 typedef struct {
@@ -25,6 +29,7 @@ typedef struct {
 
 typedef struct {
     dbt_host_t host;
+    dbt_rx_flow_t rx_flow;
     dbt_acl_t acl;
     dbt_l2cap_rx_t rx;
     dbt_channels_t channels;
@@ -44,6 +49,8 @@ typedef struct {
 dbt_result_t dbt_runtime_init(dbt_runtime_t *runtime, dbt_transport_t transport,
     dbt_runtime_hooks_t hooks, uint16_t maximum_mtu, uint32_t command_timeout_ms);
 dbt_result_t dbt_runtime_start(dbt_runtime_t *runtime, uint32_t now_ms);
+dbt_result_t dbt_runtime_enable_rx_flow(dbt_runtime_t *runtime, uint16_t packet_bytes,
+                                       uint16_t packet_count);
 dbt_result_t dbt_runtime_receive(dbt_runtime_t *runtime, const uint8_t *data, uint16_t size);
 void dbt_runtime_poll(dbt_runtime_t *runtime, uint32_t now_ms, uint16_t rx_budget, uint16_t tx_budget);
 uint32_t dbt_runtime_wait_ms(const dbt_runtime_t *runtime, uint32_t now_ms);

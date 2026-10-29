@@ -9,6 +9,9 @@
 #include "probe_echo.h"
 #include "probe_sdp.h"
 #endif
+#ifdef DBT_PROBE_INGRESS_TRACE
+#include "probe_ingress.h"
+#endif
 #include "esp_bt.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -44,7 +47,13 @@ static void send_available(void) { wake_owner(); }
 
 static int receive_packet(uint8_t *data, uint16_t size) {
     /* No allocation, logging, decoding, profile state mutation or waiting here. */
+#ifdef DBT_PROBE_INGRESS_TRACE
+    uint32_t token=probe_ingress_begin(data,size);
+#endif
     (void)dbt_runtime_receive(&runtime, data, size);
+#ifdef DBT_PROBE_INGRESS_TRACE
+    probe_ingress_end(token,data,size);
+#endif
     wake_owner();
     return 0; /* VHCI has no supported retry contract; core latches any loss. */
 }
@@ -86,6 +95,24 @@ static void profile_link(void *context,const dbt_link_change_t *change) {
 #endif
 static void observe(void *context, const dbt_hci_packet_t *packet) {
     (void)context;
+#ifdef DBT_PROBE_INGRESS_TRACE
+    if(packet->type==DBT_H4_ACL) {
+        probe_ingress_sample_t sample;
+        bool valid=probe_ingress_observe(packet,&sample);
+        static bool trace_failure_reported;
+        if(!valid && !trace_failure_reported) {
+            trace_failure_reported=true;
+            probe_ingress_fault_t failure;
+            probe_ingress_fault(&failure);
+            probe_security_trace(8,failure.snapshot_size,failure.packet_size,0,failure.reason);
+            probe_security_trace(9,failure.snapshot_flags&0xfffu,failure.packet_flags&0xfffu,
+                                  failure.snapshot_flags>>12,failure.packet_flags>>12);
+            probe_security_trace(10,(uint16_t)failure.published,(uint16_t)failure.consumed,0,(uint8_t)failure.lost);
+        }
+        probe_echo_receive_packet(packet,valid?&sample:0);
+        return;
+    }
+#endif
     if (packet->type != DBT_H4_EVENT || gap.state == DBT_GAP_IDLE) return;
 #ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
     dbt_result_t owned=probe_security_receive(packet,now_ms());
@@ -172,6 +199,7 @@ void app_main(void) {
     dbt_host_t *host = &runtime.host;
     dbt_host_state_t previous = DBT_HOST_IDLE;
     dbt_gap_state_t previous_gap = DBT_GAP_IDLE;
+    bool receive_flow_started=false,receive_flow_reported=false;
 #ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
     bool security_reported=false,echo_initialized=false;
 #endif
@@ -181,6 +209,29 @@ void app_main(void) {
     for (;;) {
         uint32_t now = now_ms();
         dbt_runtime_poll(&runtime, now, 8, 8);
+        if(runtime.ready && !receive_flow_started) {
+            receive_flow_started=true;
+#ifndef DBT_PROBE_DISABLE_RX_FLOW
+            uint16_t bytes=DBT_MAX_H4_BYTES-5u;
+            uint16_t packets=(DBT_QUEUE_BYTES-DBT_CONTROL_RESERVE_BYTES)/(DBT_MAX_H4_BYTES+2u);
+            dbt_result_t result=dbt_runtime_enable_rx_flow(&runtime,bytes,packets);
+            if(result!=DBT_OK) {
+                printf("{\"probe\":\"rx_flow_failed\",\"result\":%u,\"supported_octet10\":%u}\n",
+                       result,runtime.host.controller.supported_commands[10]);
+                dbt_runtime_abort(&runtime,DBT_FAULT_COMMAND_REJECTED);
+            }
+#endif
+        }
+        bool receive_flow_ready=runtime.rx_flow.state==DBT_RX_FLOW_ACTIVE;
+#ifdef DBT_PROBE_DISABLE_RX_FLOW
+        receive_flow_ready=true;
+#endif
+        if(runtime.ready && receive_flow_ready && !receive_flow_reported) {
+            receive_flow_reported=true;
+            printf("{\"probe\":\"rx_flow_ready\",\"enabled\":%s,\"packet_bytes\":%u,\"packets\":%u,\"metadata_bytes\":%u,\"sco_buffer_bytes\":255,\"sco_buffers\":1,\"voice_ready\":false}\n",
+                   runtime.rx_flow.state==DBT_RX_FLOW_ACTIVE?"true":"false",runtime.rx_flow.packet_bytes,
+                   runtime.rx_flow.packet_count,(unsigned)sizeof(runtime.rx_flow));
+        }
 #ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
         if(runtime.ready && !echo_initialized) {
             if(probe_echo_init(&runtime,&gap)!=DBT_OK || probe_sdp_init(&runtime)!=DBT_OK)
@@ -188,6 +239,9 @@ void app_main(void) {
             else {
                 echo_initialized=true;
                 printf("{\"probe\":\"sdp_ready\",\"records\":2,\"metadata_bytes\":%u,\"audio_ready\":false}\n",probe_sdp_bytes());
+#ifdef DBT_PROBE_INGRESS_TRACE
+                printf("{\"probe\":\"ingress_trace\",\"diagnostic_bytes\":%u,\"production_measurement\":false}\n",probe_ingress_bytes());
+#endif
             }
         }
         probe_security_poll(now);
@@ -204,7 +258,7 @@ void app_main(void) {
         }
         if (gatt_initialized) probe_gatt_poll(now);
 #endif
-        if (runtime.ready && gap.state == DBT_GAP_IDLE) (void)dbt_gap_start(&gap);
+        if (runtime.ready && receive_flow_ready && gap.state == DBT_GAP_IDLE) (void)dbt_gap_start(&gap);
         dbt_gap_poll(&gap, now);
 #ifdef DBT_PROBE_CLASSIC_SECURITY_TEST
         if(gap.state==DBT_GAP_READY && !gap.classic_pending && gap.classic_scan!=3)
@@ -244,9 +298,9 @@ void app_main(void) {
                        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
             } else if (host->state == DBT_HOST_FAILED) {
                 printf("{\"probe\":\"failed\",\"fault\":%u,\"controller_status\":%u,"
-                       "\"pending_opcode\":%u,\"rx_rejected\":%" PRIu32 "}\n",
+                       "\"pending_opcode\":%u,\"rx_rejected\":%" PRIu32 ",\"rx_flow_failed_opcode\":%u}\n",
                        (unsigned)host->fault, host->controller_status, host->pending_opcode,
-                       atomic_load_explicit(&host->ingress.rejected, memory_order_relaxed));
+                       atomic_load_explicit(&host->ingress.rejected, memory_order_relaxed),runtime.rx_flow.failed_opcode);
             }
         }
         if (gap.state != previous_gap) {

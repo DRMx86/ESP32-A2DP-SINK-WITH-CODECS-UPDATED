@@ -10,6 +10,9 @@ debug/unit keys, tracks effective key type after a changed key, and uses explici
 encryption/key-size completion before authorizing protected channels. Controller
 command admission is not treated as authentication success. A colliding incoming
 procedure can complete through actual events within a bounded deadline.
+Incoming Simple Pairing Complete no longer starts a competing encryption request.
+Local service demand made during SSP is deferred until pairing/key notification
+completes, and local encryption waits for actual authentication completion.
 
 Key and cipher epochs prevent an old size-query result or key rotation from
 authorizing a new cipher. Link generations and storage tokens reject stale callbacks.

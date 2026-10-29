@@ -94,12 +94,14 @@ static void packet(void *context, const dbt_hci_packet_t *view) {
     dbt_runtime_t *runtime = context;
     if (initialize_layers(runtime)) {
         if (view->type == DBT_H4_EVENT) {
+            dbt_rx_flow_event(&runtime->rx_flow,view);
             dbt_link_change_t change;
             dbt_result_t result = dbt_acl_event(&runtime->acl, view, &change);
             if (result != DBT_OK && result != DBT_UNSUPPORTED) dbt_host_abort(&runtime->host, DBT_FAULT_BAD_PACKET);
             if (result == DBT_OK && change.kind != DBT_LINK_UNCHANGED) {
                 dbt_l2cap_link_change(&runtime->rx, &change);
                 dbt_channels_link_change(&runtime->channels, &change);
+                dbt_rx_flow_link_change(&runtime->rx_flow,&change);
                 if (change.kind == DBT_LINK_REMOVED) {
                     if (runtime->control_active && runtime->control.handle == change.handle &&
                         runtime->control.generation == change.generation) {
@@ -118,9 +120,18 @@ static void packet(void *context, const dbt_hci_packet_t *view) {
             dbt_result_t result = dbt_l2cap_receive(&runtime->rx, &runtime->acl, view, runtime->now_ms);
             if (result != DBT_OK) dbt_host_abort(&runtime->host,
                 result == DBT_NO_SPACE ? DBT_FAULT_RX_OVERRUN : DBT_FAULT_BAD_PACKET);
+        } else if(view->type==DBT_H4_SCO) {
+            if(runtime->hooks.sco)runtime->hooks.sco(runtime->hooks.context,view);
+            else dbt_host_abort(&runtime->host,DBT_FAULT_UNSUPPORTED_PACKET);
         }
     }
     if (runtime->hooks.packet) runtime->hooks.packet(runtime->hooks.context, view);
+    if(view->type==DBT_H4_ACL && runtime->host.state==DBT_HOST_IDENTIFIED &&
+       runtime->rx_flow.state==DBT_RX_FLOW_ACTIVE) {
+        const dbt_link_t *link=dbt_acl_find(&runtime->acl,view->handle);
+        dbt_result_t result=dbt_rx_flow_completed(&runtime->rx_flow,link);
+        if(result!=DBT_OK)dbt_host_abort(&runtime->host,result==DBT_NO_SPACE?DBT_FAULT_RX_OVERRUN:DBT_FAULT_BAD_PACKET);
+    }
 }
 
 dbt_result_t dbt_runtime_init(dbt_runtime_t *runtime, dbt_transport_t transport,
@@ -132,12 +143,19 @@ dbt_result_t dbt_runtime_init(dbt_runtime_t *runtime, dbt_transport_t transport,
     dbt_l2cap_hooks_t rx_hooks = {runtime, allocate, release, pdu};
     dbt_result_t result = dbt_l2cap_rx_init(&runtime->rx, rx_hooks, maximum_mtu, 1000);
     if (result != DBT_OK) return result;
+    result=dbt_rx_flow_init(&runtime->rx_flow,&runtime->host,&runtime->acl);
+    if(result!=DBT_OK)return result;
     return dbt_host_init(&runtime->host, transport, packet, runtime, timeout_ms);
 }
 dbt_result_t dbt_runtime_start(dbt_runtime_t *runtime, uint32_t now_ms) {
     if (!runtime) return DBT_INVALID;
     runtime->now_ms = now_ms;
     return dbt_host_start(&runtime->host, now_ms);
+}
+dbt_result_t dbt_runtime_enable_rx_flow(dbt_runtime_t *runtime,uint16_t packet_bytes,uint16_t packet_count) {
+    if(!runtime)return DBT_INVALID;
+    if(!runtime->ready)return DBT_BUSY;
+    return dbt_rx_flow_start(&runtime->rx_flow,packet_bytes,packet_count);
 }
 dbt_result_t dbt_runtime_receive(dbt_runtime_t *runtime, const uint8_t *data, uint16_t size) {
     if (!runtime) return DBT_INVALID;
@@ -146,6 +164,7 @@ dbt_result_t dbt_runtime_receive(dbt_runtime_t *runtime, const uint8_t *data, ui
 void dbt_runtime_abort(dbt_runtime_t *runtime, dbt_fault_t fault) {
     if (!runtime || fault == DBT_FAULT_NONE) return;
     dbt_host_abort(&runtime->host, fault);
+    dbt_rx_flow_abort(&runtime->rx_flow);
     if (runtime->cleared) return;
     runtime->cleared = true; runtime->ready = false;
     dbt_l2cap_rx_clear(&runtime->rx);
@@ -218,8 +237,12 @@ static bool send_fragment(dbt_runtime_t *runtime, unsigned index) {
 void dbt_runtime_poll(dbt_runtime_t *runtime, uint32_t now_ms, uint16_t rx_budget, uint16_t tx_budget) {
     if (!runtime || runtime->in_poll) return;
     runtime->in_poll = true; runtime->now_ms = now_ms;
+    /* Return released RX buffers before another ordinary command can take the
+     * transport. Acks remain independent of command and outbound ACL credits. */
+    dbt_rx_flow_poll(&runtime->rx_flow,now_ms);
     (void)dbt_host_poll(&runtime->host, now_ms, rx_budget);
     (void)initialize_layers(runtime);
+    dbt_rx_flow_poll(&runtime->rx_flow,now_ms);
     if (runtime->host.state == DBT_HOST_FAILED) {
         dbt_runtime_abort(runtime, runtime->host.fault);
         runtime->in_poll = false; return;
@@ -247,6 +270,8 @@ uint32_t dbt_runtime_wait_ms(const dbt_runtime_t *runtime, uint32_t now_ms) {
     if (!runtime) return UINT32_MAX;
     uint32_t wait = dbt_host_wait_ms(&runtime->host, now_ms);
     if (!runtime->ready || runtime->host.state == DBT_HOST_FAILED) return wait;
+    uint32_t receive_flow=dbt_rx_flow_wait_ms(&runtime->rx_flow);
+    if(receive_flow<wait)wait=receive_flow;
     uint32_t channels = dbt_channels_wait_ms(&runtime->channels, now_ms);
     if (channels < wait) wait = channels;
     for (unsigned i = 0; i < DBT_MAX_LINKS; ++i) {

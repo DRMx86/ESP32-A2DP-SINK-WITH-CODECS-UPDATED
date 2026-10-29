@@ -7,7 +7,7 @@
 
 /* One controller-task producer, one host-task consumer. No borrowed RX data. */
 #define DBT_QUEUE_BYTES 4096u
-#define DBT_MAX_H4_BYTES 1026u
+#define DBT_MAX_H4_BYTES 1029u /* 1024-byte host ACL payload + H4/ACL header. */
 #define DBT_CONTROL_RESERVE_BYTES 520u
 
 typedef enum {

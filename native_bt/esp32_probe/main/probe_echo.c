@@ -18,6 +18,12 @@ static struct {
     uint8_t sequence;
     bool active;
 } wire_pattern;
+static struct {
+    uint32_t generation;
+    uint16_t handle,size,offset;
+    uint8_t sequence;
+    bool active;
+} receive_pattern;
 static void check_pattern(uint8_t stage,const uint8_t *data,uint16_t size) {
     for(unsigned i=1;i<size;++i) {
         uint8_t expected=(uint8_t)(data[0]+i*29u);
@@ -155,6 +161,41 @@ void probe_echo_transmit(const uint8_t *data,uint16_t size) {
         ++wire_pattern.offset;
     }
     if(wire_pattern.offset>=wire_pattern.size)wire_pattern.active=false;
+}
+void probe_echo_receive_packet(const dbt_hci_packet_t *packet,const probe_ingress_sample_t *sample) {
+    if(!runtime || packet->type!=DBT_H4_ACL)return;
+    const dbt_link_t *link=dbt_acl_find(&runtime->acl,packet->handle);
+    if(!link || link->kind!=DBT_LINK_CLASSIC)return;
+    uint16_t at=0;
+    if(packet->pb==2) {
+        receive_pattern.active=false;
+        if(packet->size<5)return;
+        const dbt_channel_t *channel=dbt_channels_find(&runtime->channels,packet->handle,
+                                                       dbt_read_le16(packet->payload+2));
+        if(!channel || channel->psm!=0x1001 || channel->state!=DBT_CH_OPEN)return;
+        receive_pattern.handle=packet->handle;receive_pattern.generation=link->generation;
+        receive_pattern.size=dbt_read_le16(packet->payload);receive_pattern.offset=0;
+        receive_pattern.sequence=packet->payload[4];receive_pattern.active=true;at=4;
+    } else if(packet->pb!=1 || !receive_pattern.active || receive_pattern.handle!=packet->handle ||
+              receive_pattern.generation!=link->generation)return;
+    if(packet->pb==1 && sample) {
+        uint8_t expected=(uint8_t)(receive_pattern.sequence+receive_pattern.offset*29u);
+        if(sample->before!=expected)probe_security_trace(6,receive_pattern.size,receive_pattern.offset,expected,sample->before);
+        if(sample->before!=packet->payload[0])probe_security_trace(5,receive_pattern.size,receive_pattern.offset,sample->before,packet->payload[0]);
+        if(sample->after_ready && sample->before!=sample->after)probe_security_trace(7,receive_pattern.size,receive_pattern.offset,sample->before,sample->after);
+    }
+    for(unsigned i=at;i<packet->size;++i) {
+        uint8_t expected=(uint8_t)(receive_pattern.sequence+receive_pattern.offset*29u);
+        if(packet->payload[i]!=expected) {
+            probe_security_trace(4,receive_pattern.size,receive_pattern.offset,expected,packet->payload[i]);
+            if(sample)probe_security_trace_hash(sample->before_hash,sample->after_hash,sample->owner_hash,
+                                                sample->ordinal,packet->size,(uint16_t)i,sample->after_ready);
+            receive_pattern.offset=(uint16_t)(receive_pattern.offset+packet->size-i);
+            break;
+        }
+        ++receive_pattern.offset;
+    }
+    if(receive_pattern.offset>=receive_pattern.size)receive_pattern.active=false;
 }
 uint32_t probe_echo_wait_ms(void) {
     if (!runtime)

@@ -11,6 +11,7 @@ dbt_result_t dbt_hci_decode(const uint8_t *data, uint16_t size, dbt_hci_packet_t
     packet->handle = 0;
     packet->pb = 0;
     packet->bc = 0;
+    packet->packet_status = 0;
     packet->payload = 0;
     packet->size = 0;
     if (data[0] == DBT_H4_EVENT) {
@@ -31,6 +32,14 @@ dbt_result_t dbt_hci_decode(const uint8_t *data, uint16_t size, dbt_hci_packet_t
         packet->payload = data + 5;
         packet->size = payload_size;
         return DBT_OK;
+    }
+    if(data[0]==DBT_H4_SCO) {
+        if(size<4u || (uint16_t)(4u+data[3])!=size)return DBT_INVALID;
+        uint16_t flags=dbt_read_le16(data+1);
+        if(flags&0xc000u)return DBT_INVALID;
+        packet->handle=flags&0x0fffu;
+        packet->packet_status=(uint8_t)((flags>>12)&3u);
+        packet->payload=data+4;packet->size=data[3];return DBT_OK;
     }
     return DBT_UNSUPPORTED;
 }

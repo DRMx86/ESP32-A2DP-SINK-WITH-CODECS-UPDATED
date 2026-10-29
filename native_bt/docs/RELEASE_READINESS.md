@@ -11,9 +11,9 @@ the product application.
 | Required gate | Evidence now | Remaining work |
 | --- | --- | --- |
 | Independently authored source | Owned C11 core; explicit source lists exclude BTstack/Bluedroid/NimBLE from probe | Continue provenance/dependency review for each new layer |
-| HCI ownership and command lifecycle | Copied bounded ingress; general command queue; asynchronous transport lifetime and timeout tests | Production recovery and incoming controller flow control |
+| HCI ownership and command lifecycle | Copied bounded ingress; general command queue; asynchronous transport lifetime; receive credits/acknowledgments and SCO framing tests | Production recovery, synchronous connection/flow ownership and broader target qualification |
 | Links and Basic L2CAP | Paired peers establish/configure/transfer fragmented data/disconnect through actual runtime APIs | External peer interoperability, traffic limits and target soak |
-| Classic + BLE scheduling | Separate/shared credit accounting; independent-link admission tests; both RF bearers connected in one diagnostic run | Concurrent traffic failed at Classic sequence 76; sustained traffic and audio coexistence remain unqualified |
+| Classic + BLE scheduling | Separate/shared credit accounting; accepted receive-flow setup; a short concurrent Classic/ATT diagnostic run passed | Longer untraced workload failed at Classic sequence 95; sustained traffic and audio coexistence remain unqualified |
 | Controller setup/GAP | Nine-command configuration; explicit scan/advertising control; negative security replies | Outgoing procedures, discovery, privacy and procedure recovery |
 | Pairing and bonds | Owned Classic SSP/PIN/passkey/OOB policy and asynchronous key store/delete; live Just Works, native commit/reload and 16-byte encrypted channel observed | Resolve later Linux test-bond disappearance; qualify other Classic methods/reconnects. LE SMP, secure connections, privacy and BLE bonds remain pending |
 | BLE application | Owned ATT server/bearer: discovery, MTU, reads/writes, queued writes, permissions, per-client CCCDs and notification/indication handling; diagnostic live reads/writes/notifications passed | Product control/meter/upload/OTA migration, real security/bond integration, GATT client and optional advanced features |

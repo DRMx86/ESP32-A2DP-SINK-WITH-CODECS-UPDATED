@@ -78,6 +78,7 @@ static void controller(peer_t *peer){
     check_borrow(peer);
     uint16_t opcode=dbt_read_le16(peer->wire+1);
     if(peer->wire[0]!=1){++peer->integrity_errors;peer->ready=true;return;}
+    if(opcode==0x0c35){peer->ready=true;return;} /* No command credit or reply. */
     uint8_t bytes[68]={1,(uint8_t)opcode,(uint8_t)(opcode>>8),0};uint8_t size=4;
     switch(opcode){
     case 0x1001:size=12;bytes[4]=8;bytes[7]=8;break;
@@ -418,5 +419,111 @@ EXPORT int test_sdp_runtime_oom_backpressure_and_disconnect(void){
     CHECK(!sdp_bearer.replies[0].active && !sdp_bearer.replies[0].bytes);
     CHECK(peers[1].allocated==peers[1].released && dbt_sdp_bearer_clear(&sdp_bearer)==DBT_OK);
     CHECK(!sdp_errors && !peers[1].integrity_errors);
+    return 0;
+}
+
+static uint8_t large_classic_received[2048],large_le_received[515];
+static unsigned large_classic_calls,large_le_calls;
+static void large_classic_data(void *context,const dbt_channel_t *channel,const uint8_t *bytes,uint16_t size){
+    (void)context;(void)channel;
+    if(size!=sizeof(large_classic_received)){++peers[1].integrity_errors;return;}
+    copy(large_classic_received,bytes,size);++large_classic_calls;
+}
+static void large_le_data(void *context,const dbt_link_t *link,uint16_t cid,const uint8_t *bytes,uint16_t size){
+    (void)context;(void)link;(void)cid;
+    if(size!=sizeof(large_le_received)){++peers[1].integrity_errors;return;}
+    copy(large_le_received,bytes,size);++large_le_calls;
+}
+EXPORT int test_runtime_1021_byte_fragments_with_le_interleave(void){
+    clock_ms=0;int r=fixture(0);if(r)return r;r=fixture(1);if(r)return r;
+    for(unsigned i=0;i<2;++i){
+        add_link(&peers[i],1,false);add_link(&peers[i],2,true);
+        peers[i].runtime.acl.mtu[DBT_LINK_CLASSIC]=1021;
+        peers[i].runtime.acl.mtu[DBT_LINK_LE]=251;
+        CHECK(dbt_channels_register_fixed(&peers[i].runtime.channels,DBT_LINK_LE,4)==DBT_OK);
+    }
+    dbt_service_t service={0x1001,2048,48,DBT_SECURITY_NONE};
+    CHECK(dbt_channels_register(&peers[1].runtime.channels,service)==DBT_OK);
+    uint16_t cid=0;
+    CHECK(dbt_channels_open(&peers[0].runtime.channels,1,0x1001,2048,48,DBT_SECURITY_NONE,clock_ms,&cid)==DBT_OK);
+    pump(70);CHECK(peers[0].opens==1 && peers[1].opens==1);
+    peers[1].runtime.hooks.channels.data=large_classic_data;
+    peers[1].runtime.hooks.channels.fixed_data=large_le_data;
+    large_classic_calls=large_le_calls=0;
+    static uint8_t classic_bytes[2048],le_bytes[515];
+    for(unsigned iteration=0;iteration<128;++iteration){
+        for(unsigned i=0;i<sizeof(classic_bytes);++i)classic_bytes[i]=(uint8_t)(iteration+i*29u);
+        for(unsigned i=0;i<sizeof(le_bytes);++i)le_bytes[i]=(uint8_t)(iteration+i*13u);
+        CHECK(dbt_runtime_send(&peers[0].runtime,1,cid,classic_bytes,sizeof(classic_bytes),tx_done,0)==DBT_OK);
+        CHECK(dbt_runtime_send_fixed(&peers[0].runtime,2,4,le_bytes,sizeof(le_bytes),tx_done,0)==DBT_OK);
+        pump(40);
+        CHECK(large_classic_calls==iteration+1 && large_le_calls==iteration+1);
+        for(unsigned i=0;i<sizeof(classic_bytes);++i)CHECK(large_classic_received[i]==classic_bytes[i]);
+        for(unsigned i=0;i<sizeof(le_bytes);++i)CHECK(large_le_received[i]==le_bytes[i]);
+        CHECK(peers[1].allocated==peers[1].released && peers[0].integrity_errors==0 && peers[1].integrity_errors==0);
+        CHECK(peers[0].runtime.ready && peers[1].runtime.ready && done_calls==2*(iteration+1));
+    }
+    return 0;
+}
+
+EXPORT int test_runtime_rx_flow_counts_consumed_classic_and_le_packets(void){
+    clock_ms=0;int r=fixture(0);if(r)return r;r=fixture(1);if(r)return r;
+    peers[1].runtime.host.controller.supported_commands[10]=0xe0;
+    CHECK(dbt_runtime_enable_rx_flow(&peers[1].runtime,1021,3)==DBT_OK);pump(20);
+    CHECK(peers[1].runtime.rx_flow.state==DBT_RX_FLOW_ACTIVE);
+    for(unsigned i=0;i<2;++i){
+        add_link(&peers[i],1,false);add_link(&peers[i],2,true);
+        peers[i].runtime.acl.mtu[DBT_LINK_CLASSIC]=1021;peers[i].runtime.acl.mtu[DBT_LINK_LE]=251;
+        CHECK(dbt_channels_register_fixed(&peers[i].runtime.channels,DBT_LINK_LE,4)==DBT_OK);
+    }
+    dbt_service_t service={0x1001,2048,48,DBT_SECURITY_NONE};
+    CHECK(dbt_channels_register(&peers[1].runtime.channels,service)==DBT_OK);
+    uint16_t cid;
+    CHECK(dbt_channels_open(&peers[0].runtime.channels,1,0x1001,2048,48,DBT_SECURITY_NONE,clock_ms,&cid)==DBT_OK);
+    pump(80);CHECK(peers[0].opens==1 && peers[1].opens==1);
+    peers[1].runtime.hooks.channels.data=large_classic_data;peers[1].runtime.hooks.channels.fixed_data=large_le_data;
+    large_classic_calls=large_le_calls=0;
+    static uint8_t classic_bytes[2048],le_bytes[515];
+    for(unsigned i=0;i<sizeof(classic_bytes);++i)classic_bytes[i]=(uint8_t)(i*29u+59);
+    for(unsigned i=0;i<sizeof(le_bytes);++i)le_bytes[i]=(uint8_t)(i*13u+7);
+    uint32_t before=peers[1].runtime.rx_flow.acknowledged;
+    CHECK(dbt_runtime_send(&peers[0].runtime,1,cid,classic_bytes,sizeof(classic_bytes),0,0)==DBT_OK);
+    CHECK(dbt_runtime_send_fixed(&peers[0].runtime,2,4,le_bytes,sizeof(le_bytes),0,0)==DBT_OK);
+    pump(100);
+    CHECK(large_classic_calls==1 && large_le_calls==1 && peers[1].runtime.rx_flow.acknowledged-before==6);
+    for(unsigned i=0;i<sizeof(classic_bytes);++i)CHECK(large_classic_received[i]==classic_bytes[i]);
+    for(unsigned i=0;i<sizeof(le_bytes);++i)CHECK(large_le_received[i]==le_bytes[i]);
+    CHECK(!peers[0].integrity_errors && !peers[1].integrity_errors && peers[1].allocated==peers[1].released);
+    CHECK(peers[1].runtime.ready && peers[1].runtime.host.unexpected_completions==0);
+    return 0;
+}
+
+static unsigned sco_calls;
+static uint8_t sco_status;
+static void sco_data(void *context,const dbt_hci_packet_t *packet){
+    peer_t *peer=context;++sco_calls;sco_status=packet->packet_status;
+    peer->received_size=packet->size;copy(peer->received,packet->payload,packet->size);
+    if(packet->type!=DBT_H4_SCO || packet->handle!=7)++peer->integrity_errors;
+}
+EXPORT int test_runtime_sco_framing_status_and_explicit_route(void){
+    clock_ms=0;int r=fixture(0);if(r)return r;peer_t *peer=&peers[0];
+    peer->runtime.hooks.sco=sco_data;sco_calls=0;
+    static uint8_t wire[259];wire[0]=3;wire[1]=7;wire[3]=255;
+    for(unsigned i=0;i<255;++i)wire[4+i]=(uint8_t)(i*17u+7);
+    for(unsigned status=0;status<4;++status){
+        wire[2]=(uint8_t)(status<<4);
+        CHECK(dbt_runtime_receive(&peer->runtime,wire,sizeof(wire))==DBT_OK);
+        dbt_runtime_poll(&peer->runtime,++clock_ms,8,0);
+        CHECK(sco_calls==status+1 && sco_status==status && peer->received_size==255);
+        for(unsigned i=0;i<255;++i)CHECK(peer->received[i]==wire[4+i]);
+        CHECK(peer->runtime.ready && !peer->allocated && !peer->integrity_errors);
+    }
+    CHECK(dbt_runtime_receive(&peer->runtime,wire,sizeof(wire)-1)==DBT_INVALID);
+    r=fixture(0);if(r)return r;peer=&peers[0];wire[2]=0;
+    CHECK(dbt_runtime_receive(&peer->runtime,wire,sizeof(wire))==DBT_OK);
+    dbt_runtime_poll(&peer->runtime,++clock_ms,8,0);
+    CHECK(peer->runtime.host.fault==DBT_FAULT_UNSUPPORTED_PACKET && !peer->runtime.ready);
+    r=fixture(0);if(r)return r;peer=&peers[0];wire[2]=0x40;
+    CHECK(dbt_runtime_receive(&peer->runtime,wire,sizeof(wire))==DBT_INVALID);
     return 0;
 }

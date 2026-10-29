@@ -608,15 +608,21 @@ dbt_result_t dbt_classic_security_require(dbt_classic_security_t *security, cons
             return DBT_UNSUPPORTED;
         peer->force_pair = true;
     }
-    if(!peer->force_pair && ((peer->accepted_pairing && peer->io_replied) ||
+    bool previous_requirement=peer->locally_required;
+    peer->locally_required=true;
+    if(!peer->force_pair && ((peer->accepted_pairing && peer->io_replied &&
+        (!peer->pairing_complete || !peer->key_known)) ||
        (peer->key_known && link->encrypted && peer->encryption_mode &&
         peer->encryption_key_epoch==peer->key_epoch)))return DBT_BUSY;
     if (!peer->auth_requested) {
         uint8_t parameters[2];
         put16(parameters, link->handle);
         result = enqueue(security, peer, peer->address, 0x0411, parameters, 2, DBT_COMMAND_STATUS);
-        if (result != DBT_OK)
+        if (result != DBT_OK) {
+            peer->locally_required=previous_requirement;
+            peer->wanted=previous_wanted;
             return result;
+        }
         peer->auth_requested = true;
         peer->deadline = now_ms + security->config.procedure_timeout_ms;
     }
@@ -929,8 +935,20 @@ void dbt_classic_security_poll(dbt_classic_security_t *security, uint32_t now_ms
                 DBT_OK)
                 peer->encryption_requested = true;
         }
+        /* An application request made during incoming SSP is deferred until
+         * pairing/key notification completes. Do not start a competing
+         * authentication procedure while IO/SSP is still in progress. */
+        if(link && peer->locally_required && peer->key_known && !peer->encryption_mode &&
+           !peer->auth_requested && peer->pairing_complete) {
+            uint8_t parameters[2];put16(parameters,link->handle);
+            if(enqueue(security,peer,peer->address,0x0411,parameters,2,DBT_COMMAND_STATUS)==DBT_OK)
+                peer->auth_requested=true;
+        }
         if (link && peer->key_known && !peer->encryption_mode && !peer->encryption_requested &&
-            (peer->pairing_complete || peer->auth_complete)) {
+            peer->auth_requested && peer->auth_complete) {
+            /* Simple Pairing Complete is not ownership of the peer's pending
+             * encryption procedure. Only drive encryption after our own
+             * Authentication Requested procedure actually completes. */
             uint8_t parameters[3];
             put16(parameters, link->handle);
             parameters[2] = 1;

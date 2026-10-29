@@ -98,7 +98,7 @@ EXPORT int test_hci_framing(void) {
     CHECK(dbt_hci_decode(acl, sizeof(acl), &packet) == DBT_INVALID);
     CHECK(dbt_hci_decode(0, 0, &packet) == DBT_INVALID);
     uint8_t sco[] = { 3, 0, 0, 0 };
-    CHECK(dbt_hci_decode(sco, sizeof(sco), &packet) == DBT_UNSUPPORTED);
+    CHECK(dbt_hci_decode(sco, sizeof(sco), &packet) == DBT_OK && packet.type==DBT_H4_SCO && packet.size==0);
     return 0;
 }
 
@@ -335,7 +335,7 @@ EXPORT int test_decode_generated_lengths(void) {
         }
         dbt_result_t result = dbt_hci_decode(input, size, &packet);
         if (result == DBT_OK) {
-            CHECK(packet.type == 2 || packet.type == 4);
+            CHECK(packet.type == 2 || packet.type == 3 || packet.type == 4);
             CHECK(packet.payload >= input && packet.payload + packet.size == input + size);
         }
     }

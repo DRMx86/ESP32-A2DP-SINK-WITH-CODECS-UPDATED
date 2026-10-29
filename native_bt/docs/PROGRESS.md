@@ -28,14 +28,15 @@ it does not publish or replace the locally modified Bluedroid audio application.
 | --- | --- | --- |
 | BTstack | Pinned `51e11ce3692abfe31b4ee3d66cffdeb1ae1626f2`; shallow sparse checkout ~70.6 MiB | Reference only |
 | HCI | Owned FIFO, framing, eight-command identification, copied four-slot general command queue, completion/status distinction, credit gates and timeout/abort callbacks | Native/ESP32 builds; target probe result is recorded separately below |
-| Runtime/ACL | HCI events drive Classic/LE links, credits, disconnect cleanup and L2CAP dispatch in one owner; live LE ATT and encrypted Classic Basic channels established | Simultaneous traffic failed; sustained RF scheduling remains unqualified |
-| Basic L2CAP | Lazy RX reassembly; incoming/outgoing Classic channels; both configuration directions, MTUs, continuation, option negotiation, disconnect, RTX/ERTX, duplicate handling and information responses | Basic mode only; ERTM/LE credit channels and production RX flow control pending |
+| Runtime/ACL | HCI events drive Classic/LE links, credits, disconnect cleanup and L2CAP dispatch in one owner; live LE ATT and encrypted Classic Basic channels established | Short simultaneous diagnostic run passed; longer untraced run failed, so reliability remains unqualified |
+| Basic L2CAP | Lazy RX reassembly; incoming/outgoing Classic channels; both configuration directions, MTUs, continuation, option negotiation, disconnect, RTX/ERTX, duplicate handling and information responses | Basic mode only; ERTM/LE credit channels and broader interoperability pending |
+| Receive flow / SCO framing | Bounded controller-to-host ACL credits, special no-command-credit acknowledgments, generation cleanup, accepted ESP32 buffer setup; H4 SCO status/framing and explicit callback | Receive flow did not remove all corruption. SCO connection management, synchronous flow and voice profiles remain pending |
 | Scheduling | One borrowed outbound SDU per connection, round-robin ACL admission, per-link signaling selection, full-PDU signaling commit and immutable transport buffer lifetime | Simulated independent Classic/LE pools and asynchronous transports; not measured radio fairness |
 | GAP | Event masks, LE host support, local name/class, SSP enable, legacy advertising parameters/data/scan response; explicit Classic scan and LE advertising controls | Incoming Classic policy hook; security requests default to negative replies without a security owner. BLE bonding/privacy and initiator procedures pending |
 | Classic security | Owned SSP/PIN/passkey/OOB policy, key lifecycle, encryption/key-size qualification, asynchronous durable store/delete and pending L2CAP security; live Just Works pairing and encrypted 16-byte-key channel passed | Linux diagnostic bond later disappeared; durable reconnect interoperability and other pairing methods need qualification. BLE SMP remains pending |
 | ATT/GATT server | Owned LE ATT server and runtime bridge; discovery, reads/blobs/multiple, MTU 517, writes/commands, prepare/execute/cancel, per-client CCCDs, security policy, notify/indicate, deferred worker completion | Product command/OTA binding, real security/bond store, GATT client/EATT/signed writes/robust caching pending |
 | SDP server | Immutable flash database, UUID aliases, all three server transactions, bounded continuation, streaming response slices and lazy runtime bridge; Linux verifier and BlueZ sdptool passed | SDP client and audio service records pending; discovery does not implement the advertised product profiles |
-| Tests | 94 groups pass on Windows/Linux, including 10,240 generated ATT inputs, 8192 generated SDP inputs, security/key lifecycle tests, paired bearer tests and 20,000 concurrent FIFO packets; Linux ASan/UBSan passes | Host behavior and memory safety; separate limited RF evidence below |
+| Tests | 101 groups pass on Windows/Linux, including 10,240 generated ATT inputs, 8192 generated SDP inputs, security/key lifecycle tests, exact 1021-byte interleaved fragments, receive-credit/SCO framing tests and 20,000 concurrent FIFO packets; Linux ASan/UBSan passes | Host behavior and memory safety; separate limited RF evidence below |
 | Integer DSP | Flash coefficient tables for 13 rates; Q4.28 coefficients/Q5.27 headroom, fractional error carry, 20 ms ramps, render-owned histories, atomic controls | Embedded CPU and audible tests pending |
 | DSP numerical tests | 36 cases at 44.1/48/96/192 kHz; max magnitude error ~0.00000145 dB against the coefficient response; native state 1128 bytes | Not ESP32 timing or acoustic proof |
 | C++ integration | Actual DSP/storage headers: normal, ASan/UBSan and ThreadSanitizer pass with concurrent control/render/meter requests | NVS is mocked; no physical power-loss test |
@@ -54,7 +55,7 @@ measurements of the selected path, not total codec RAM or embedded performance.
 
 ## Still pending
 
-GAP initiator/discovery procedures and recovery; production RX flow control;
+GAP initiator/discovery procedures and recovery; broader receive-flow interoperability;
 L2CAP modes beyond Basic; further Classic security interoperability and BLE SMP/bonding/privacy;
 product ATT/GATT integration, GATT client/advanced features; SDP client;
 AVDTP/A2DP/AVRCP; remaining profiles; complete app migration; concurrent Classic/BLE
@@ -98,12 +99,14 @@ baud from the candidate's actual build configuration and separates probe/audio r
 Independent probes were flashed into OTA1 with full image/selector readback and
 observed `controller_identified` / `gap_state:2` markers. The controller reports
 separate Classic 1021-byte/9-packet and LE 251-byte/10-packet ACL pools. The latest
-combined GATT/Classic-security image has a 6672-byte host and 10496-byte runtime
+combined GATT/Classic-security image has a 6676-byte host and 10616-byte runtime
 (includes host, ACL, reassembly, channel manager, TX descriptors and packet buffer).
 The pre-SDP identification snapshot reported internal free heap 207644 bytes and largest
-block 110592 bytes. GATT metadata adds 784 bytes; security/cache metadata adds
+block 110592 bytes. The current untraced identification snapshot reports 207260
+free internal bytes. GATT metadata adds 784 bytes; security/cache metadata adds
 1280 bytes, excluding worker/logger stacks and queue allocations. These exclude
 unimplemented profiles/audio and do not support an equivalent-feature comparison.
+The runtime includes its 104-byte receive-flow state; do not add that state twice.
 Latest probe receipt: `_build/hardware/COM6-probe-trial.json`.
 
 Subsequent `-WithGatt` probing added a diagnostic unbonded LE echo/counter service.
@@ -151,9 +154,38 @@ pattern checks to locate the corruption. A kernel-socket Classic/LE test then
 completed 59 Classic echoes and 28 ATT writes before another 2048-byte payload
 failed, with two changed bytes starting at offset 1017. Target pattern checks
 observed the corruption already in the received/reassembled payload, then unchanged
-through reply preparation and HCI submission. This narrows the failure to the
-receive path; it does not distinguish the Linux/controller/ingress/reassembly
-boundaries yet. There is no passing coexistence result.
+through reply preparation and HCI submission. Optional whole-packet fingerprints
+then matched the already-corrupt controller callback buffer before and after the
+host copy, and in the queued owner view. Controlled single-byte fixtures check
+that diagnostic distinction. The radio/controller/USB boundary before VHCI is
+unresolved; this is not evidence that the owned FIFO changed the byte.
+
+Controller-to-host receive flow is now implemented and accepted by the ESP32.
+Its linked controller routine requires nonzero SCO buffer fields in Classic/dual
+mode, so the host now supports bounded SCO HCI framing and reserves shared FIFO
+capacity for one maximum SCO frame, while the probe still has zero synchronous
+connections and no voice profiles. Default host receive capacity is three 1024-byte
+ACL packets. The 4096-byte FIFO and 520-byte control reserve are retained.
+
+A traced concurrent run passed 245 Classic echoes (sizes through 2048 bytes),
+107 ATT writes, 17 readbacks, a 512-byte reliable write and 108 notifications over
+15.586 seconds of overlap. The longer untraced 1000-write attempt failed at Classic
+sequence 95 after 51 ATT writes. Classic-only control passed 240 echoes / 159320
+bytes with LE observed disconnected at 24 checks. Neither the short pass nor the
+new receive-flow setup establishes sustained/audio coexistence. See [receive flow](RX_FLOW.md).
+
+Incoming SSP no longer automatically starts a competing encryption command on
+Simple Pairing Complete. Explicit local security demand waits for its actual
+authentication completion; demand received during SSP is deferred. Fresh pairing
+and verified encrypted channels passed after this change. The Linux harness now
+reuses an existing Classic bond: generic Pair on a BR-bonded dual-mode device can
+otherwise attempt unsupported BLE pairing and time out.
+
+One 40 MHz diagnostic image failed in SDK flash initialization before app_main;
+an untraced control booted, and traced 80 MHz images booted. The probe now matches
+the preserved bootloader's configured 80 MHz flash setting. The bootloader and
+original application are unchanged; this configuration experiment does not prove
+a universal startup fix.
 
 Cleanup re-pairing passed, followed by an encrypted administration request to
 delete only the native diagnostic bond. The target reported the bond-removed event
@@ -166,8 +198,9 @@ running `audio_candidate_integer_dsp1` with Bluedroid, not the independent probe
 Receipt: `_build/hardware/COM6-audio-trial.json`; original application remains intact.
 
 Local SDK headers and ROM linker maps already expose standard HCI opcodes and
-controller command-table symbols. No ROM dump/Ghidra database was created; use
-decompilation for specific controller gaps, not as a substitute for host protocols.
+controller command-table symbols. Focused linked-controller disassembly identified
+the receive-buffer validation constraint. No ROM dump/Ghidra database was created;
+protocol implementation remains owned code above the retained controller.
 
 ## Fixed-path receipts
 
@@ -178,9 +211,10 @@ Probe build: `_build/esp32`; audio app: `_build/audio_app`.
 Small original-source snapshots: `_build/dsp/baseline` and `_build/lhdc/baseline`.
 Remote test sources reuse `~/.cache/native_bt/`; no SDK/media/credentials uploaded.
 SSH dependencies are confined to `_build/python_deps`; compiler cache writes are
-disabled in build wrappers. Latest generated size ~363 MiB plus ~71 MiB reference.
+disabled in build wrappers. Latest generated size ~365 MiB plus ~71 MiB reference.
 
-Latest focus: independent Classic security and simultaneous Classic/LE diagnostics.
+Latest focus: receive flow, SCO HCI framing, Classic procedure ownership and
+simultaneous Classic/LE diagnostics.
 The controller-only
 probe defaults to configuring the controller with advertising and Classic scan
 disabled. `build_probe.ps1 -WithGatt` opts into diagnostic LE advertising; it is

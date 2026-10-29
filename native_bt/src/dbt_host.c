@@ -55,6 +55,7 @@ dbt_result_t dbt_host_command(dbt_host_t *host, uint16_t opcode,
     dbt_command_done_t done, void *context, uint32_t now_ms) {
     if (!host || !opcode || (size && !parameters) ||
         (response != DBT_COMMAND_COMPLETE && response != DBT_COMMAND_STATUS)) return DBT_INVALID;
+    if(opcode==0x0c35)return DBT_UNSUPPORTED; /* Special no-credit/no-response RX ack. */
     if (host->state != DBT_HOST_IDENTIFIED) return DBT_BUSY;
     if (host->command_count == DBT_COMMAND_SLOTS) return DBT_NO_SPACE;
     dbt_command_t *command = &host->commands[(host->command_head + host->command_count) % DBT_COMMAND_SLOTS];
@@ -110,7 +111,7 @@ dbt_result_t dbt_host_receive(dbt_host_t *host, const uint8_t *data, uint16_t si
         fault = result == DBT_UNSUPPORTED ? DBT_FAULT_UNSUPPORTED_PACKET : DBT_FAULT_BAD_PACKET;
     } else {
         result = sensitive(&packet) ? dbt_queue_push_sensitive(&host->ingress,data,size,false) :
-            dbt_queue_push(&host->ingress, data, size, packet.type == DBT_H4_ACL);
+            dbt_queue_push(&host->ingress, data, size, packet.type == DBT_H4_ACL || packet.type == DBT_H4_SCO);
         if (result != DBT_OK) fault = DBT_FAULT_RX_OVERRUN;
     }
     if (fault != DBT_FAULT_NONE) {

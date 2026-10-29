@@ -21,4 +21,6 @@ dbt_result_t probe_security_forget_peer(const dbt_link_t *link);
 /* Bounded deterministic echo diagnostics, formatted only by the logger task. */
 void probe_security_trace(uint8_t stage, uint16_t size, uint16_t offset,
                           uint8_t expected, uint8_t actual);
+void probe_security_trace_hash(uint32_t before,uint32_t after,uint32_t owner,uint32_t ordinal,
+                               uint16_t size,uint16_t offset,bool after_ready);
 #endif

@@ -64,6 +64,11 @@ TESTS = [
     "sdp_continuation_binding_and_database", "sdp_combined_lists_and_empty_match",
     "sdp_generated_inputs_and_output_bounds",
     "sdp_runtime_fragmentation_and_lazy_reply", "sdp_runtime_oom_backpressure_and_disconnect",
+    "runtime_1021_byte_fragments_with_le_interleave",
+    "classic_ssp_defers_local_security_demand",
+    "rx_flow_setup_limits_and_capabilities", "rx_flow_acks_ignore_credits_and_retain_transport_bytes",
+    "rx_flow_disconnect_generations_and_error_response", "runtime_rx_flow_counts_consumed_classic_and_le_packets",
+    "runtime_sco_framing_status_and_explicit_route",
 ]
 
 

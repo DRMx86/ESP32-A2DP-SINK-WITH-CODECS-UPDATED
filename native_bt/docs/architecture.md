@@ -56,7 +56,7 @@ documents this event/state-machine organization and configurable memory pools.
 | Memory and packet ownership | `src/btstack_memory.c`, `src/btstack_memory_pool.c`, ESP32 VHCI port | Explicit capacities and ownership; resource failure visible; no unbounded queues | One 4096-byte SPSC record ring, 520-byte control reserve, FIFO order, overflow latch; host-tested and target-linked |
 | HCI transport | `port/esp32/components/btstack/hci_transport_esp32_vhci.c` | Copy callback-lifetime packets; task wakeup; retain TX until transport allows reuse | Owned VHCI/runtime adapter booted on COM6; controller identification/setup succeeded |
 | HCI/GAP and controller setup | `src/hci.c`, `src/hci_cmd.c`, `src/gap.h` | Capability/command masks, event masks, names, scan/advertise, link lifecycle, timeouts, command admission | Copied command queue, status/completion, setup, explicit scan/advertising APIs, admission/security hooks; initiator/discovery/privacy pending |
-| ACL flow and links | `src/hci.c`, `src/hci.h` | Classic/LE shared or separate credits; Number Of Completed Packets; per-handle tracking; disconnect reclaim; RX host flow control | Integrated link/credit manager with paired-runtime and disconnect tests; production RX host flow control pending |
+| ACL flow and links | `src/hci.c`, `src/hci.h` | Classic/LE shared or separate credits; Number Of Completed Packets; per-handle tracking; disconnect reclaim; RX host flow control | Integrated link/credit manager and bounded receive-flow module; host buffer setup, no-command-credit acknowledgments and disconnect generation cleanup tested. Long simultaneous RF workload remains failing |
 | L2CAP common | `src/l2cap.c`, `src/l2cap.h` | ACL fragmentation/reassembly per handle, fixed channels, dynamic CID allocation, signaling IDs and timers, MTU and errors | Lazy RX, gated TX, generations, channel IDs, bounded signaling inbox/outbox and timers implemented |
 | L2CAP Classic | `src/l2cap.c` | Incoming/outgoing setup, bidirectional configuration, disconnect, information requests, security, negotiated ERTM features | Basic channel setup/configuration/disconnect, asymmetric MTUs, options/continuations/duplicates and information responses tested; ERTM pending |
 | L2CAP LE | `src/l2cap.c` | ATT/SMP/signaling fixed channels; connection-parameter requests; LE credit-based channels when enabled | Fixed CID registration/routing, ATT bridge and central-side parameter policy callback implemented; SMP and credit channels pending |
@@ -162,21 +162,22 @@ insufficient evidence of codec playback or Classic/BLE coexistence.
 
 ## Current lower-layer evidence
 
-- 65 native groups pass on Windows/Linux, including paired runtime channel setup,
+- 101 native groups pass on Windows/Linux, including paired runtime channel setup,
   fragmented transfer, disconnect, separate Classic/LE credit stalls and 20,000
   variable-length packets over two concurrent threads. ASan/UBSan passes on Linux.
 - ESP32 probe links with controller-only host selection and dual-mode controller
   configuration. Compile-command path audit finds no BTstack, Bluedroid or NimBLE
   host dependency. The linked symbol table contains the owned HCI functions.
-- Owned `dbt_host_t`: 6672 bytes on ESP32, 6752 on native x64. The complete owned
-  runtime is 10488 bytes on ESP32, including the host, link/channel metadata and
+- Owned `dbt_host_t`: 6676 bytes on ESP32, 6752 on native x64. The complete owned
+  runtime is 10616 bytes on ESP32, including the host, receive-flow state, link/channel metadata and
   fragment TX buffer. This excludes the controller/SDK/task stack, separate GAP
   configuration object, lazy RX fragments, future protocols and codecs.
-- The COM6 target probe completed eight identification and nine GAP configuration
+- The COM6 target probe completed eight identification, two receive-flow and nine GAP configuration
   commands. Original application/bootloader/data layout were preserved; only the
   trial slot and one selector sector were written and verified by readback.
-- Independent diagnostic LE ATT/GATT testing passed; Classic RF/audio/coexistence
-  and comparable full-stack footprint remain unqualified. Latest evidence is in
+- Independent LE ATT/GATT, Classic pairing/encryption and SDP diagnostics passed.
+  A short concurrent data test passed, while the longer untraced run failed.
+  Audio/coexistence reliability and comparable full-stack footprint remain unqualified. Latest evidence is in
   [ATT/GATT](ATT_GATT.md), [progress](PROGRESS.md)
   and [release gates](RELEASE_READINESS.md).
 

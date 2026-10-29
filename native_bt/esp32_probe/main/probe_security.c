@@ -28,7 +28,14 @@ typedef struct {
     bool deleting, committed;
 } store_job_t;
 typedef struct {
-    dbt_classic_security_info_t info;
+    union {
+        dbt_classic_security_info_t info;
+        struct {
+            uint32_t before,after,owner,ordinal;
+            uint16_t size,offset;
+            bool after_ready;
+        } hashes;
+    };
     uint8_t event, reason, status;
 } log_item_t;
 static struct {
@@ -191,6 +198,14 @@ static void logger(void *context) {
         log_item_t item;
         if (xQueueReceive(log_queue, &item, portMAX_DELAY) != pdTRUE)
             continue;
+        if(item.event==0x8b) {
+            printf("{\"probe\":\"ingress_hash\",\"ordinal\":%lu,\"size\":%u,\"offset\":%u,"
+                   "\"controller_before\":%lu,\"controller_after\":%lu,\"host_owner\":%lu,\"after_ready\":%s}\n",
+                   (unsigned long)item.hashes.ordinal,item.hashes.size,item.hashes.offset,
+                   (unsigned long)item.hashes.before,(unsigned long)item.hashes.after,
+                   (unsigned long)item.hashes.owner,item.hashes.after_ready?"true":"false");
+            continue;
+        }
         if (item.event & 0x80u) {
             printf("{\"probe\":\"echo_pattern\",\"stage\":%u,\"size\":%u,\"offset\":%lu,"
                    "\"expected\":%u,\"actual\":%u}\n",item.event & 0x7fu,item.info.handle,
@@ -214,6 +229,16 @@ void probe_security_trace(uint8_t stage,uint16_t size,uint16_t offset,uint8_t ex
     wipe(&item,sizeof(item));item.event=(uint8_t)(0x80u | stage);
     item.info.handle=size;item.info.generation=offset;
     item.info.key_size=expected;item.info.key_type=actual;
+    if(xQueueSend(log_queue,&item,0)==pdTRUE)++submitted;
+}
+void probe_security_trace_hash(uint32_t before,uint32_t after,uint32_t queued,uint32_t ordinal,
+                               uint16_t size,uint16_t offset,bool after_ready) {
+    static unsigned submitted;
+    if(!log_queue || submitted>=4)return;
+    log_item_t item;wipe(&item,sizeof(item));item.event=0x8b;
+    item.hashes.before=before;item.hashes.after=after;item.hashes.owner=queued;
+    item.hashes.ordinal=ordinal;item.hashes.size=size;item.hashes.offset=offset;
+    item.hashes.after_ready=after_ready;
     if(xQueueSend(log_queue,&item,0)==pdTRUE)++submitted;
 }
 static void event(void *context, dbt_classic_security_event_t kind,

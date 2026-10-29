@@ -6,6 +6,8 @@ controller. BTstack is inspected only in `../reference/btstack`.
 
 Current milestone: a portable C11 HCI/ACL/Basic L2CAP runtime, GAP setup, LE ATT/GATT,
 Classic security and an SDP server, with an isolated ESP-IDF 5.5.2 probe.
+Controller-to-host ACL credits and bounded SCO HCI framing are also implemented;
+voice connection/profile ownership remains pending.
 This is **not yet a complete Bluetooth host or a product audio
 firmware replacement**. The staged audio application still uses Bluedroid and
 includes the separately requested integer DSP and codec-memory changes.
@@ -41,7 +43,8 @@ existing adjacent SDK and the already installed ESP-IDF toolchain.
 The probe performs eight bounded, asynchronous identification commands: Reset,
 version, supported commands/features, address, Classic buffer capacity, and LE
 features/buffer capacity. `IDENTIFIED` means these responses were validated, not
-that pairing, GATT or A2DP works. It then configures event masks, host support,
+that pairing, GATT or A2DP works. It next completes receive-buffer/flow setup,
+then configures event masks, host support,
 name/class, SSP enable and legacy advertising parameters/data using the general
 command queue. It does not enable advertising or Classic scanning.
 The probe is not automatically flashed and uses its own partition layout.
@@ -53,7 +56,7 @@ Classic credits while LE data/control continue. `dbt_gap` has explicit incoming
 admission and security-owner hooks; no bonding/security/profile implementation is
 implied by enabling SSP in the controller.
 
-There are 94 native groups, including the concurrent queue test. Run
+There are 101 native groups, including the concurrent queue test. Run
 `python native_bt/tools/test_stack_linux.py --host HOST --user USER` for Linux
 normal/ASan/UBSan checks; the password prompt is session-only. The default probe
 does not require the separate LHDC checkout. `build_probe.ps1 -WithLhdc` enables
@@ -71,6 +74,12 @@ encrypted Basic echo and public SDP discovery. Select the actual test adapter;
 the example address is a placeholder. Just Works pairing/encryption and live
 [SDP discovery](docs/SDP.md) passed. Simultaneous Classic/LE traffic still fails;
 these diagnostic services contain no audio profiles.
+
+Receive buffers default to three 1024-byte ACL packets in the existing bounded
+FIFO. See [receive flow and hardware limits](docs/RX_FLOW.md). A short concurrent
+run passed; the longer untraced workload still failed. The default probe has no
+per-packet ingress fingerprints; `-TraceIngress` enables the bounded diagnostic
+snapshots. `-WithoutRxFlow` is an explicit diagnostic comparison option.
 
 See [release gates](docs/RELEASE_READINESS.md) before publishing a replacement
 firmware. This milestone remains an incomplete development implementation.

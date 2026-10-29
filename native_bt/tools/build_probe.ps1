@@ -1,5 +1,8 @@
-param([switch]$WithLhdc,[switch]$WithGatt,[switch]$WithClassicSecurity,[string]$TestPeer='')
+param([switch]$WithLhdc,[switch]$WithGatt,[switch]$WithClassicSecurity,[switch]$TraceIngress,[switch]$WithoutRxFlow,[string]$TestPeer='')
 $ErrorActionPreference = 'Stop'
+if ($TraceIngress -and -not $WithClassicSecurity) {
+    throw 'The ingress trace requires -WithClassicSecurity and its restricted test peer'
+}
 if ($WithClassicSecurity -and $TestPeer -notmatch '^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$') {
     throw 'The Classic pairing probe requires -TestPeer with the exact Linux adapter address'
 }
@@ -23,13 +26,15 @@ $env:CCACHE_DISABLE = '1'
 $lhdcBuild = if ($WithLhdc) { 'ON' } else { 'OFF' }
 $gattBuild = if ($WithGatt) { 'ON' } else { 'OFF' }
 $securityBuild = if ($WithClassicSecurity) { 'ON' } else { 'OFF' }
+$ingressBuild = if ($TraceIngress) { 'ON' } else { 'OFF' }
+$disableReceiveFlow = if ($WithoutRxFlow) { 'ON' } else { 'OFF' }
 $peerBytes = '0,0,0,0,0,0'
 if ($WithClassicSecurity) {
     $peerOctets=$TestPeer.Split(':')
     [array]::Reverse($peerOctets)
     $peerBytes=($peerOctets | ForEach-Object { '0x'+$_ }) -join ','
 }
-python (Join-Path $idfRoot 'tools\idf.py') -C $probeRoot -B $buildRoot "-DDBT_PROBE_LHDC_BUILD=$lhdcBuild" "-DDBT_PROBE_GATT_TEST=$gattBuild" "-DDBT_PROBE_CLASSIC_SECURITY_TEST=$securityBuild" "-DDBT_PROBE_PAIRING_PEER_BYTES=$peerBytes" build
+python (Join-Path $idfRoot 'tools\idf.py') -C $probeRoot -B $buildRoot "-DDBT_PROBE_LHDC_BUILD=$lhdcBuild" "-DDBT_PROBE_GATT_TEST=$gattBuild" "-DDBT_PROBE_CLASSIC_SECURITY_TEST=$securityBuild" "-DDBT_PROBE_INGRESS_TRACE=$ingressBuild" "-DDBT_PROBE_DISABLE_RX_FLOW=$disableReceiveFlow" "-DDBT_PROBE_PAIRING_PEER_BYTES=$peerBytes" build
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 python (Join-Path $PSScriptRoot 'check_workspace.py')
 exit $LASTEXITCODE
