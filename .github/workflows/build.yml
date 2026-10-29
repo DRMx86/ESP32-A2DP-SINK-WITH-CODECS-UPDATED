@@ -1,0 +1,74 @@
+name: Build ESP32 A2DP Sink
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout (with submodules, if any)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget flex bison gperf python3 python3-pip \
+            python3-venv cmake ninja-build ccache libffi-dev libssl-dev \
+            dfu-util libusb-1.0-0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The patched ESP-IDF v5.5.2 lives in ./esp-idf inside this repo.
+      - name: Cache ESP-IDF tools (toolchain etc.)
+        uses: actions/cache@v4
+        with:
+          path: ~/.espressif
+          key: espressif-tools-${{ runner.os }}-${{ hashFiles('esp-idf/tools/tools.json') }}
+
+      - name: Install ESP-IDF tools for ESP32
+        run: |
+          cd esp-idf
+          ./install.sh esp32
+
+      - name: Build main firmware (bt_audio_sink)
+        run: |
+          . esp-idf/export.sh
+          cd bt_audio_sink
+          idf.py build
+
+      # Recovery firmware is a separate project (WiFi recovery OTA).
+      # Remove this step if you only need the main firmware.
+      - name: Build recovery firmware
+        continue-on-error: true
+        run: |
+          . esp-idf/export.sh
+          cd bt_audio_sink/recovery
+          idf.py build
+
+      - name: Collect build outputs
+        if: always()
+        run: |
+          mkdir -p out/main out/recovery
+          cp bt_audio_sink/build/*.bin bt_audio_sink/build/*.elf bt_audio_sink/build/*.map out/main/ 2>/dev/null || true
+          cp bt_audio_sink/build/bootloader/bootloader.bin out/main/ 2>/dev/null || true
+          cp bt_audio_sink/build/partition_table/partition-table.bin out/main/ 2>/dev/null || true
+          cp bt_audio_sink/build/flasher_args.json out/main/ 2>/dev/null || true
+          cp bt_audio_sink/recovery/build/*.bin out/recovery/ 2>/dev/null || true
+
+      - name: Upload firmware artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-a2dp-sink-firmware
+          path: out/
+          if-no-files-found: warn
